@@ -2330,6 +2330,18 @@ void GL_MANGLE( glMultMatrixf )( const GLfloat *m )
 	glEsImpl->glMultMatrixf( m );
 }
 
+void GL_MANGLE( glCompressedTexImage2D )( GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data )
+{
+	FlushOnStateChange();
+	glEsImpl->glCompressedTexImage2D( target, level, internalformat, width, height, border, imageSize, data );
+}
+
+void GL_MANGLE( glGetTexImage )( GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels )
+{
+	FlushOnStateChange();
+	glEsImpl->glGetTexImage( target, level, format, type, pixels );
+}
+
 void GL_MANGLE( glPixelStorei )( GLenum pname, GLint param )
 {
 	FlushOnStateChange();

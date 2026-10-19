@@ -671,6 +671,8 @@ void   GL_MANGLE( glPointSize )( GLfloat size );
 void   GL_MANGLE( glDrawArrays )( GLenum mode, int first, int count );
 void   GL_MANGLE( glMultMatrixf )( const GLfloat *m );
 void   GL_MANGLE( glPixelStorei )( GLenum pname, GLint param );
+void   GL_MANGLE( glCompressedTexImage2D )( GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data );
+void   GL_MANGLE( glGetTexImage )( GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels );
 void   GL_MANGLE( glFogi )( GLenum pname, GLint param );
 void   GL_MANGLE( glFogf )( GLenum pname, GLfloat param );
 void   GL_MANGLE( glFogfv )( GLenum pname, const GLfloat *params );

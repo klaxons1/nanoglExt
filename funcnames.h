@@ -15,6 +15,7 @@
     "glColorMask",
     "glColorPointer",
     "glCompressedTexImage2D",
+    "glGetTexImage",
     "glCompressedTexSubImage2D",
     "glCopyTexImage2D",
     "glCopyTexSubImage2D",

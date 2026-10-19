@@ -66,6 +66,7 @@ typedef struct GlESInterface
 	void( APIENTRY * glColorMask )( unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha ) S;
 	void( APIENTRY * glColorPointer )( int size, unsigned int type, int stride, const void *pointer ) S;
 	void( APIENTRY * glCompressedTexImage2D )( unsigned int target, int level, unsigned int internalformat, int width, int height, int border, int imageSize, const void *data ) S;
+	void( APIENTRY * glGetTexImage )( unsigned int target, int level, unsigned int format, unsigned int type, void *pixels ) S;
 	void( APIENTRY * glCompressedTexSubImage2D )( unsigned int target, int level, int xoffset, int yoffset, int width, int height, unsigned int format, int imageSize, const void *data ) S;
 	void( APIENTRY * glCopyTexImage2D )( unsigned int target, int level, unsigned int internalformat, int x, int y, int width, int height, int border ) S;
 	void( APIENTRY * glCopyTexSubImage2D )( unsigned int target, int level, int xoffset, int yoffset, int x, int y, int width, int height ) S;
