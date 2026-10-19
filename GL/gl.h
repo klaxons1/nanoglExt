@@ -1,6 +1,8 @@
 #ifndef __GL__H__
 #define __GL__H__
 
+#include <stddef.h>
+
 #ifndef NANOGL_APIENTRY
 #if defined( _WIN32 )
 #define NANOGL_APIENTRY __stdcall
@@ -38,6 +40,8 @@ typedef double GLclampd;
 typedef void GLvoid;
 typedef int GLfixed;
 typedef int GLclampx;
+typedef ptrdiff_t GLintptr;
+typedef ptrdiff_t GLsizeiptr;
 
 /* Boolean values */
 #define GL_FALSE 0x0
@@ -56,6 +60,14 @@ typedef int GLclampx;
 #define GL_4_BYTES        0x1409
 #define GL_DOUBLE         0x140A
 #define GL_FIXED          0x140C
+#define GL_ARRAY_BUFFER_ARB         0x8892
+#define GL_ELEMENT_ARRAY_BUFFER_ARB 0x8893
+#define GL_STREAM_DRAW_ARB          0x88E0
+#define GL_STATIC_DRAW_ARB          0x88E4
+#define GL_DYNAMIC_DRAW_ARB         0x88E8
+#define GL_READ_ONLY                0x88B8
+#define GL_WRITE_ONLY               0x88B9
+#define GL_READ_WRITE               0x88BA
 
 /* StringName */
 #define GL_VENDOR     0x1F00
@@ -81,6 +93,8 @@ typedef int GLclampx;
 #define GL_QUADS          0x0007
 #define GL_QUAD_STRIP     0x0008
 #define GL_POLYGON        0x0009
+#define GL_COMPILE                 0x1300
+#define GL_COMPILE_AND_EXECUTE     0x1301
 
 /* EnableCap */
 #define GL_FOG            0x0B60
@@ -311,6 +325,7 @@ typedef int GLclampx;
 #define GL_TEXTURE_BINDING_1D      0x8068
 #define GL_TEXTURE_BINDING_2D      0x8069
 #define GL_TEXTURE_INTERNAL_FORMAT 0x1003
+#define GL_TEXTURE_COMPRESSED_IMAGE_SIZE 0x86A0
 #define GL_ALPHA4                  0x803B
 #define GL_ALPHA8                  0x803C
 #define GL_ALPHA12                 0x803D
@@ -594,6 +609,7 @@ void   GL_MANGLE( glEnd )( void );
 void   GL_MANGLE( glEnable )( GLenum cap );
 void   GL_MANGLE( glDisable )( GLenum cap );
 void   GL_MANGLE( glVertex2f )( GLfloat x, GLfloat y );
+void   GL_MANGLE( glVertex2i )( GLint x, GLint y );
 void   GL_MANGLE( glVertex4f )( GLfloat x, GLfloat y, GLfloat z, GLfloat w );
 void   GL_MANGLE( glVertex4fv )( const GLfloat *v );
 void   GL_MANGLE( glColor3f )( GLfloat red, GLfloat green, GLfloat blue );
@@ -613,12 +629,16 @@ void   GL_MANGLE( glTexParameterf )( GLenum target, GLenum pname, GLfloat param 
 void   GL_MANGLE( glTexImage2D )( GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels );
 void   GL_MANGLE( glDrawBuffer )( GLenum mode );
 void   GL_MANGLE( glTranslatef )( GLfloat x, GLfloat y, GLfloat z );
+void   GL_MANGLE( glTranslate )( GLdouble x, GLdouble y, GLdouble z );
 void   GL_MANGLE( glRotatef )( GLfloat angle, GLfloat x, GLfloat y, GLfloat z );
+void   GL_MANGLE( glRotate )( GLdouble angle, GLdouble x, GLdouble y, GLdouble z );
 void   GL_MANGLE( glScalef )( GLfloat x, GLfloat y, GLfloat z );
 void   GL_MANGLE( glDepthRange )( GLclampd zNear, GLclampd zFar );
 void   GL_MANGLE( glDepthFunc )( GLenum func );
 void   GL_MANGLE( glFinish )( void );
 void   GL_MANGLE( glGetFloatv )( GLenum pname, GLfloat *params );
+void   GL_MANGLE( glGetDoublev )( GLenum pname, GLdouble *params );
+void   GL_MANGLE( glGetBooleanv )( GLenum pname, GLboolean *params );
 void   GL_MANGLE( glGetIntegerv )( GLenum pname, GLint *params );
 void   GL_MANGLE( glCullFace )( GLenum mode );
 void   GL_MANGLE( glFrustum )( GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar );
@@ -653,6 +673,11 @@ void   GL_MANGLE( glPolygonMode )( GLenum face, GLenum mode );
 void   GL_MANGLE( glArrayElement )( GLint i );
 void   GL_MANGLE( glLineWidth )( GLfloat width );
 void   GL_MANGLE( glCallList )( GLuint list );
+void   GL_MANGLE( glDeleteLists )( GLuint list, GLsizei range );
+void   GL_MANGLE( glEndList )( void );
+GLuint GL_MANGLE( glGenLists )( GLsizei range );
+void   GL_MANGLE( glNewList )( GLuint list, GLenum mode );
+GLboolean GL_MANGLE( glIsList )( GLuint list );
 void   GL_MANGLE( glTexCoord2fv )( const GLfloat *v );
 void   GL_MANGLE( glColorMask )( GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha );
 void   GL_MANGLE( glStencilFunc )( GLenum func, GLint ref, GLuint mask );
@@ -679,9 +704,15 @@ void   GL_MANGLE( glPointSize )( GLfloat size );
 // Vladimir
 void   GL_MANGLE( glDrawArrays )( GLenum mode, int first, int count );
 void   GL_MANGLE( glMultMatrixf )( const GLfloat *m );
+void   GL_MANGLE( glMultMatrix )( const GLdouble *m );
 void   GL_MANGLE( glPixelStorei )( GLenum pname, GLint param );
 void   GL_MANGLE( glCompressedTexImage2D )( GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data );
+void   GL_MANGLE( glCompressedTexImage2DARB )( GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data );
+void   GL_MANGLE( glCompressedTexSubImage2D )( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data );
+void   GL_MANGLE( glCompressedTexSubImage2DARB )( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data );
+void   GL_MANGLE( glGetCompressedTexImageARB )( GLenum target, GLint level, GLvoid *pixels );
 void   GL_MANGLE( glGetTexImage )( GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels );
+void   GL_MANGLE( glGetTexLevelParameteriv )( GLenum target, GLint level, GLenum pname, GLint *params );
 void   GL_MANGLE( glFogi )( GLenum pname, GLint param );
 void   GL_MANGLE( glFogf )( GLenum pname, GLfloat param );
 void   GL_MANGLE( glFogfv )( GLenum pname, const GLfloat *params );
@@ -698,6 +729,7 @@ void   GL_MANGLE( glLightf )( GLenum light, GLenum pname, GLfloat param );
 void   GL_MANGLE( glLightfv )( GLenum light, GLenum pname, const GLfloat *params );
 void   GL_MANGLE( glLightModelf )( GLenum pname, GLfloat param );
 void   GL_MANGLE( glLightModelfv )( GLenum pname, const GLfloat *params );
+void   GL_MANGLE( glLightModeli )( GLenum pname, GLint param );
 void   GL_MANGLE( glMaterialf )( GLenum face, GLenum pname, GLfloat param );
 void   GL_MANGLE( glMaterialfv )( GLenum face, GLenum pname, const GLfloat *params );
 void   GL_MANGLE( glColorMaterial )( GLenum face, GLenum mode );
@@ -718,8 +750,9 @@ void GL_MANGLE( glTexSubImage3D )( GLenum target, GLint level,
 				   GLenum format,
 				   GLenum type, const GLvoid *pixels );
 GLboolean GL_MANGLE( glIsTexture )( GLuint texture );
-void      GL_MANGLE( glTexGeni )( GLenum coord, GLenum pname, GLint param );
-void      GL_MANGLE( glTexGenfv )( GLenum coord, GLenum pname, const GLfloat *params );
+void   GL_MANGLE( glTexGenf )( GLenum coord, GLenum pname, GLfloat param );
+void   GL_MANGLE( glTexGeni )( GLenum coord, GLenum pname, GLint param );
+void   GL_MANGLE( glTexGenfv )( GLenum coord, GLenum pname, const GLfloat *params );
 void      GL_MANGLE( glColor4ub )( GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha );
 
 // for XashXT
@@ -748,6 +781,7 @@ void      GL_MANGLE( glMultiTexCoord1f )( GLenum target, GLfloat s );
 void      GL_MANGLE( glMultiTexCoord1fARB )( GLenum target, GLfloat s );
 void      GL_MANGLE( glMultiTexCoord2f )( GLenum target, GLfloat s, GLfloat t );
 void      GL_MANGLE( glMultiTexCoord2fARB )( GLenum target, GLfloat s, GLfloat t );
+void      GL_MANGLE( glMultiTexCoord2fvARB )( GLenum target, const GLfloat *v );
 void      GL_MANGLE( glMultiTexCoord3f )( GLenum target, GLfloat s, GLfloat t, GLfloat r );
 void      GL_MANGLE( glMultiTexCoord3fARB )( GLenum target, GLfloat s, GLfloat t, GLfloat r );
 void      GL_MANGLE( glMultiTexCoord4f )( GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q );
@@ -755,11 +789,13 @@ void      GL_MANGLE( glMultiTexCoord4fARB )( GLenum target, GLfloat s, GLfloat t
 
 void      GL_MANGLE( glDrawArrays )( GLenum mode, GLint first, GLsizei count );
 
-void      GL_MANGLE( glBindBufferARB )( GLuint target, GLuint index );
-void      GL_MANGLE( glGenBuffersARB )( GLuint count, GLuint *indexes );
-void      GL_MANGLE( glDeleteBuffersARB )( GLuint count, GLuint *indexes );
-void      GL_MANGLE( glBufferDataARB )( GLuint target, GLuint size, void *buffer, GLuint type );
-void      GL_MANGLE( glBufferSubDataARB )( GLuint target, GLsizei offset, GLsizei size, void *buffer );
+void      GL_MANGLE( glBindBufferARB )( GLenum target, GLuint buffer );
+void      GL_MANGLE( glGenBuffersARB )( GLsizei count, GLuint *buffers );
+void      GL_MANGLE( glDeleteBuffersARB )( GLsizei count, const GLuint *buffers );
+void      GL_MANGLE( glBufferDataARB )( GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage );
+void      GL_MANGLE( glBufferSubDataARB )( GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data );
+GLvoid *  GL_MANGLE( glMapBufferARB )( GLenum target, GLenum access );
+GLboolean GL_MANGLE( glUnmapBufferARB )( GLenum target );
 
 GLboolean GL_MANGLE( glIsEnabled )( GLenum cap );
 

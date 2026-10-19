@@ -182,4 +182,129 @@ void NANOGL_APIENTRY glMultiTexCoord4fARB( GLenum target, GLfloat s, GLfloat t, 
 	pglMultiTexCoord4fARB( target, s, t, r, q );
 }
 
+GLuint NANOGL_APIENTRY glGenLists( GLsizei range )
+{
+	return pglGenLists( range );
+}
+
+void NANOGL_APIENTRY glDeleteLists( GLuint list, GLsizei range )
+{
+	pglDeleteLists( list, range );
+}
+
+void NANOGL_APIENTRY glNewList( GLuint list, GLenum mode )
+{
+	pglNewList( list, mode );
+}
+
+void NANOGL_APIENTRY glEndList( void )
+{
+	pglEndList();
+}
+
+GLboolean NANOGL_APIENTRY glIsList( GLuint list )
+{
+	return pglIsList( list );
+}
+
+void NANOGL_APIENTRY glTexGenf( GLenum coord, GLenum pname, GLfloat param )
+{
+	pglTexGenf( coord, pname, param );
+}
+
+void NANOGL_APIENTRY glGetTexLevelParameteriv( GLenum target, GLint level, GLenum pname, GLint *params )
+{
+	pglGetTexLevelParameteriv( target, level, pname, params );
+}
+
+void NANOGL_APIENTRY glGetBooleanv( GLenum pname, GLboolean *params )
+{
+	pglGetBooleanv( pname, params );
+}
+
+void NANOGL_APIENTRY glGetDoublev( GLenum pname, GLdouble *params )
+{
+	pglGetDoublev( pname, params );
+}
+
+void NANOGL_APIENTRY glLightModeli( GLenum pname, GLint param )
+{
+	pglLightModeli( pname, param );
+}
+
+void NANOGL_APIENTRY glMultMatrix( const GLdouble *matrix )
+{
+	pglMultMatrix( matrix );
+}
+
+void NANOGL_APIENTRY glTranslate( GLdouble x, GLdouble y, GLdouble z )
+{
+	pglTranslate( x, y, z );
+}
+
+void NANOGL_APIENTRY glRotate( GLdouble angle, GLdouble x, GLdouble y, GLdouble z )
+{
+	pglRotate( angle, x, y, z );
+}
+
+void NANOGL_APIENTRY glVertex2i( GLint x, GLint y )
+{
+	pglVertex2i( x, y );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord2fvARB( GLenum target, const GLfloat *v )
+{
+	pglMultiTexCoord2fvARB( target, v );
+}
+
+void NANOGL_APIENTRY glBindBufferARB( GLenum target, GLuint buffer )
+{
+	pglBindBufferARB( target, buffer );
+}
+
+void NANOGL_APIENTRY glGenBuffersARB( GLsizei count, GLuint *buffers )
+{
+	pglGenBuffersARB( count, buffers );
+}
+
+void NANOGL_APIENTRY glDeleteBuffersARB( GLsizei count, const GLuint *buffers )
+{
+	pglDeleteBuffersARB( count, buffers );
+}
+
+void NANOGL_APIENTRY glBufferDataARB( GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage )
+{
+	pglBufferDataARB( target, size, data, usage );
+}
+
+void NANOGL_APIENTRY glBufferSubDataARB( GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data )
+{
+	pglBufferSubDataARB( target, offset, size, data );
+}
+
+GLvoid *NANOGL_APIENTRY glMapBufferARB( GLenum target, GLenum access )
+{
+	return pglMapBufferARB( target, access );
+}
+
+GLboolean NANOGL_APIENTRY glUnmapBufferARB( GLenum target )
+{
+	return pglUnmapBufferARB( target );
+}
+
+void NANOGL_APIENTRY glCompressedTexImage2DARB( GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data )
+{
+	pglCompressedTexImage2DARB( target, level, internalformat, width, height, border, imageSize, data );
+}
+
+void NANOGL_APIENTRY glCompressedTexSubImage2DARB( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data )
+{
+	pglCompressedTexSubImage2DARB( target, level, xoffset, yoffset, width, height, format, imageSize, data );
+}
+
+void NANOGL_APIENTRY glGetCompressedTexImageARB( GLenum target, GLint level, GLvoid *pixels )
+{
+	pglGetCompressedTexImageARB( target, level, pixels );
+}
+
 #endif /* NANOGL_MANGLE_PREPEND */

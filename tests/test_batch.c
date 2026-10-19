@@ -35,6 +35,15 @@ static const GLubyte *APIENTRY StubGetString( GLenum name )
 	return (const GLubyte *)"GL_IMG_ray_tracing"; // PowerVR Wizard might've died but it still lives in our hearts
 }
 
+static void APIENTRY StubGetFloatv( GLenum pname, GLfloat *params )
+{
+	if( pname == GL_MODELVIEW_MATRIX )
+	{
+		memset( params, 0, 16 * sizeof( *params ));
+		params[0] = params[5] = params[10] = params[15] = 1.0f;
+	}
+}
+
 static void APIENTRY StubClientActiveTexture( GLenum texture )
 {
 	clientTextureUnit = texture;
@@ -107,6 +116,8 @@ void *GL_GetProcAddress( const char *name )
 		return (void *)StubVertexPointer;
 	if( !strcmp( name, "glGetString" ))
 		return (void *)StubGetString;
+	if( !strcmp( name, "glGetFloatv" ))
+		return (void *)StubGetFloatv;
 	return (void *)StubNop;
 }
 
@@ -163,10 +174,10 @@ static int Test_UnsupportedDesktopOperationsReportErrors( void )
 		return 1;
 
 	pglCallList( 1 );
-	if( pglGetError() != GL_INVALID_OPERATION )
+	if( pglGetError() != GL_INVALID_VALUE )
 		return 1;
 
-	pglTexGeni( GL_S, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR );
+	pglTexGeni( GL_S, GL_TEXTURE_GEN_MODE, GL_SPHERE_MAP );
 	if( pglGetError() != GL_INVALID_OPERATION )
 		return 1;
 
@@ -177,6 +188,48 @@ static int Test_UnsupportedDesktopOperationsReportErrors( void )
 		if( depth[i] != 0xA5 )
 			return 1;
 	return 0;
+}
+
+static int Test_ObjectLinearTexGen( void )
+{
+	const GLfloat plane[4] = { 2.0f, 3.0f, 4.0f, 5.0f };
+	GLfloat actual[4];
+	pglTexGeni( GL_S, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR );
+	pglTexGenfv( GL_S, GL_OBJECT_PLANE, plane );
+	pglEnable( GL_TEXTURE_GEN_S );
+	pglDrawArrays( GL_TRIANGLES, 0, 3 );
+	if( pglGetError() != GL_INVALID_OPERATION )
+		return 1;
+	numdraws = 0;
+	pglBegin( GL_TRIANGLES );
+	pglVertex3f( 1.0f, 2.0f, 3.0f );
+	pglVertex3f( 0.0f, 0.0f, 0.0f );
+	pglVertex3f( 1.0f, 0.0f, 0.0f );
+	pglEnd();
+	nanoGL_Flush();
+	pglDisable( GL_TEXTURE_GEN_S );
+	if( numdraws != 1 || !observedTexCoordPointer )
+		return 1;
+	memcpy( actual, observedTexCoordPointer, sizeof( actual ));
+	if( actual[0] != 25.0f || actual[1] != 0.5f || actual[2] != 0.75f || actual[3] != 1.0f )
+		return 1;
+
+	const GLfloat eyePlane[4] = { 1.0f, 0.0f, 0.0f, 2.0f };
+	pglTexGeni( GL_S, GL_TEXTURE_GEN_MODE, GL_EYE_LINEAR );
+	pglTexGenfv( GL_S, GL_EYE_PLANE, eyePlane );
+	pglEnable( GL_TEXTURE_GEN_S );
+	if( !pglIsEnabled( GL_TEXTURE_GEN_S ))
+		return 1;
+	numdraws = 0;
+	pglBegin( GL_TRIANGLES );
+	pglVertex3f( 1.0f, 2.0f, 3.0f );
+	pglVertex3f( 0.0f, 0.0f, 0.0f );
+	pglVertex3f( 1.0f, 0.0f, 0.0f );
+	pglEnd();
+	nanoGL_Flush();
+	pglDisable( GL_TEXTURE_GEN_S );
+	memcpy( actual, observedTexCoordPointer, sizeof( actual ));
+	return numdraws != 1 || actual[0] != 3.0f;
 }
 
 static int Test_FourComponentAttributes( void )
@@ -384,6 +437,117 @@ static int Test_QuadsAndQuadStrip( void )
 	return CheckDraw( 0, GL_TRIANGLES, 18, expect );
 }
 
+static int Test_CompressedTextureReadback( void )
+{
+	static const GLubyte block[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	GLubyte result[8] = { 0 };
+	GLint imageSize = 0;
+	pglBindTexture( GL_TEXTURE_2D, 78 );
+	pglCompressedTexImage2D( GL_TEXTURE_2D, 0, 0x8D64, 4, 4, 0, sizeof( block ), block );
+	pglGetTexLevelParameteriv( GL_TEXTURE_2D, 0, GL_TEXTURE_COMPRESSED_IMAGE_SIZE, &imageSize );
+	if( imageSize != (GLint)sizeof( block ))
+		return 1;
+	pglGetCompressedTexImageARB( GL_TEXTURE_2D, 0, result );
+	return memcmp( result, block, sizeof( block )) != 0;
+}
+
+static int Test_MappedBufferEmulation( void )
+{
+	static const GLubyte initial[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+	GLuint buffer = 42;
+	pglBindBufferARB( GL_ARRAY_BUFFER_ARB, buffer );
+	pglBufferDataARB( GL_ARRAY_BUFFER_ARB, sizeof( initial ), initial, GL_DYNAMIC_DRAW_ARB );
+	GLubyte *mapped = (GLubyte *)pglMapBufferARB( GL_ARRAY_BUFFER_ARB, GL_READ_WRITE );
+	if( !mapped || memcmp( mapped, initial, sizeof( initial )))
+		return 1;
+	mapped[3] = 99;
+	if( !pglUnmapBufferARB( GL_ARRAY_BUFFER_ARB ))
+		return 1;
+	mapped = (GLubyte *)pglMapBufferARB( GL_ARRAY_BUFFER_ARB, GL_READ_ONLY );
+	if( !mapped || mapped[3] != 99 )
+		return 1;
+	if( !pglUnmapBufferARB( GL_ARRAY_BUFFER_ARB ))
+		return 1;
+	pglBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	pglDeleteBuffersARB( 1, &buffer );
+	return 0;
+}
+
+static int Test_TextureShadowReadback( void )
+{
+	static const GLubyte source[16] = {
+		255, 0, 0, 255, 0, 255, 0, 128,
+		0, 0, 255, 64, 32, 64, 96, 255
+	};
+	static const GLubyte replacement[4] = { 7, 8, 9, 10 };
+	GLubyte result[16];
+	GLubyte alpha[8];
+	GLint width = 0, height = 0;
+	pglBindTexture( GL_TEXTURE_2D, 77 );
+	pglTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, source );
+	pglGetTexLevelParameteriv( GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width );
+	pglGetTexLevelParameteriv( GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height );
+	if( width != 2 || height != 2 )
+		return 1;
+	memset( result, 0, sizeof( result ));
+	pglGetTexImage( GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, result );
+	if( memcmp( result, source, sizeof( source )))
+		return 1;
+	memset( alpha, 0, sizeof( alpha ));
+	pglGetTexImage( GL_TEXTURE_2D, 0, GL_ALPHA, GL_UNSIGNED_BYTE, alpha );
+	if( alpha[0] != 255 || alpha[1] != 128 || alpha[4] != 64 || alpha[5] != 255 )
+		return 1;
+	pglTexSubImage2D( GL_TEXTURE_2D, 0, 1, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, replacement );
+	pglGetTexImage( GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, result );
+	if( memcmp( result + 4, replacement, sizeof( replacement )))
+		return 1;
+	pglCopyTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, 0, 0, 1, 1 );
+	memset( result, 0xA5, sizeof( result ));
+	pglGetTexImage( GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, result );
+	if( pglGetError() != GL_INVALID_OPERATION )
+		return 1;
+	for( size_t i = 0; i < sizeof( result ); ++i )
+		if( result[i] != 0xA5 )
+			return 1;
+	return 0;
+}
+
+static int Test_DisplayListImmediateGeometry( void )
+{
+	static const GLushort expect[] = { 0, 1, 2 };
+	GLuint list = pglGenLists( 1 );
+	if( !list || pglIsList( list ))
+		return 1;
+
+	numdraws = 0;
+	pglNewList( list, GL_COMPILE );
+	pglBegin( GL_TRIANGLES );
+	pglVertex3f( -1.0f, 0.0f, 0.0f );
+	pglVertex3f( 0.0f, 1.0f, 0.0f );
+	pglVertex3f( 1.0f, 0.0f, 0.0f );
+	pglEnd();
+	pglEndList();
+	if( numdraws || !pglIsList( list ))
+		return 1;
+
+	pglCallList( list );
+	nanoGL_Flush();
+	if( numdraws != 1 || CheckDraw( 0, GL_TRIANGLES, 3, expect ))
+		return 1;
+
+	GLuint nested = pglGenLists( 1 );
+	pglNewList( nested, GL_COMPILE );
+	pglCallList( list );
+	pglEndList();
+	numdraws = 0;
+	pglCallList( nested );
+	nanoGL_Flush();
+	if( numdraws != 1 || CheckDraw( 0, GL_TRIANGLES, 3, expect ))
+		return 1;
+	pglDeleteLists( list, 2 );
+	return pglIsList( list ) || pglIsList( nested );
+}
+
 static int Test_DrawElementsQuadConversion( void )
 {
 	static const GLfloat vertices[8][3] = { { 0 } };
@@ -433,6 +597,7 @@ int main( void )
 	RUN_TEST( Test_MissingFramebufferExtensionIsSafe );
 	RUN_TEST( Test_UnsupportedDesktopOperationsReportErrors );
 	RUN_TEST( Test_FourComponentAttributes );
+	RUN_TEST( Test_ObjectLinearTexGen );
 	RUN_TEST( Test_ArrayElementCapturesClientArrays );
 	RUN_TEST( Test_TwoQuads );
 	RUN_TEST( Test_Lines );
@@ -443,6 +608,10 @@ int main( void )
 	RUN_TEST( Test_Points );
 	RUN_TEST( Test_QuadsAndQuadStrip );
 	RUN_TEST( Test_DrawElementsQuadConversion );
+	RUN_TEST( Test_TextureShadowReadback );
+	RUN_TEST( Test_MappedBufferEmulation );
+	RUN_TEST( Test_CompressedTextureReadback );
+	RUN_TEST( Test_DisplayListImmediateGeometry );
 
 	nanoGL_Destroy();
 

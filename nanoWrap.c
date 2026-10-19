@@ -162,6 +162,14 @@ struct ptrstate
 	GLboolean enabled;
 };
 
+struct texgenstate
+{
+	GLboolean enabled;
+	GLenum mode;
+	GLfloat objectPlane[4];
+	GLfloat eyePlane[4];
+};
+
 struct nanotmuState
 {
 	struct booleanstate texture_2d;
@@ -175,6 +183,9 @@ struct nanotmuState
 
 static struct nanotmuState tmuState0;
 static struct nanotmuState tmuState1;
+static struct texgenstate texgenStates[2][4];
+static GLfloat texgenModelView[16];
+static GLboolean texgenModelViewValid;
 
 static struct nanotmuState tmuInitState = {
 	{ GL_FALSE, GL_FALSE },
@@ -252,8 +263,507 @@ static void SetWrapperError( GLenum error )
 		nanoWrapperError = error;
 }
 
-void InitGLStructs( void )
+enum DisplayListOpcode
 {
+	DL_BEGIN = 1,
+	DL_END,
+	DL_VERTEX3,
+	DL_VERTEX4,
+	DL_COLOR4,
+	DL_NORMAL3,
+	DL_TEXCOORD4,
+	DL_CALL
+};
+
+struct DisplayListCommand
+{
+	GLenum opcode;
+	GLuint integer;
+	GLfloat value[4];
+};
+
+struct DisplayList
+{
+	GLuint id;
+	GLboolean compiled;
+	size_t count;
+	size_t capacity;
+	struct DisplayListCommand *commands;
+};
+
+#define DISPLAY_LIST_COUNT 1024
+#define DISPLAY_LIST_MAX_DEPTH 64
+static struct DisplayList displayLists[DISPLAY_LIST_COUNT];
+
+struct TextureShadow
+{
+	GLuint texture;
+	GLenum target;
+	GLint level;
+	GLint internalFormat;
+	GLsizei width;
+	GLsizei height;
+	GLenum format;
+	GLenum type;
+	GLubyte *pixels;
+	size_t dataSize;
+	GLboolean readable;
+	GLboolean compressed;
+	GLboolean compressedReadable;
+};
+
+static struct TextureShadow *textureShadows;
+static size_t textureShadowCount;
+static size_t textureShadowCapacity;
+static GLint texturePackAlignment = 4;
+static GLint textureUnpackAlignment = 4;
+
+struct BufferShadow
+{
+	GLuint id;
+	GLubyte *data;
+	size_t size;
+	GLenum usage;
+	GLboolean mapped;
+};
+
+static struct BufferShadow *bufferShadows;
+static size_t bufferShadowCount;
+static size_t bufferShadowCapacity;
+static GLuint boundArrayBuffer;
+static GLuint boundElementArrayBuffer;
+static struct DisplayList *compilingDisplayList;
+static GLenum displayListCompileMode;
+static GLboolean executingDisplayList;
+static unsigned int displayListDepth;
+static GLuint nextDisplayListId = 1;
+
+static struct DisplayList *FindDisplayList( GLuint id )
+{
+	for( size_t i = 0; i < DISPLAY_LIST_COUNT; ++i )
+		if( displayLists[i].id == id )
+			return &displayLists[i];
+	return NULL;
+}
+
+static GLboolean RecordDisplayListCommand( GLenum opcode, GLuint integer, const GLfloat *values )
+{
+	if( !compilingDisplayList || executingDisplayList )
+		return GL_FALSE;
+	struct DisplayList *list = compilingDisplayList;
+	if( list->count == list->capacity )
+	{
+		size_t capacity = list->capacity ? list->capacity * 2 : 32;
+		if( capacity < list->capacity || capacity > SIZE_MAX / sizeof( *list->commands ))
+		{
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return GL_TRUE;
+		}
+		struct DisplayListCommand *commands = (struct DisplayListCommand *)realloc( list->commands, capacity * sizeof( *commands ));
+		if( !commands )
+		{
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return GL_TRUE;
+		}
+		list->commands = commands;
+		list->capacity = capacity;
+	}
+	struct DisplayListCommand *command = &list->commands[list->count++];
+	command->opcode = opcode;
+	command->integer = integer;
+	memset( command->value, 0, sizeof( command->value ));
+	if( values )
+		memcpy( command->value, values, sizeof( command->value ));
+	return displayListCompileMode == GL_COMPILE;
+}
+
+static void ExecuteDisplayListCommand( const struct DisplayListCommand *command )
+{
+	switch( command->opcode )
+	{
+	case DL_BEGIN: GL_MANGLE_NAME( glBegin )( command->integer ); break;
+	case DL_END: GL_MANGLE_NAME( glEnd )(); break;
+	case DL_VERTEX3: GL_MANGLE_NAME( glVertex3f )( command->value[0], command->value[1], command->value[2] ); break;
+	case DL_VERTEX4: GL_MANGLE_NAME( glVertex4f )( command->value[0], command->value[1], command->value[2], command->value[3] ); break;
+	case DL_COLOR4: GL_MANGLE_NAME( glColor4f )( command->value[0], command->value[1], command->value[2], command->value[3] ); break;
+	case DL_NORMAL3: GL_MANGLE_NAME( glNormal3f )( command->value[0], command->value[1], command->value[2] ); break;
+	case DL_TEXCOORD4: GL_MANGLE_NAME( glMultiTexCoord4f )( command->integer, command->value[0], command->value[1], command->value[2], command->value[3] ); break;
+	case DL_CALL: GL_MANGLE_NAME( glCallList )( command->integer ); break;
+	default: SetWrapperError( GL_INVALID_OPERATION ); break;
+	}
+}
+
+static GLenum ShadowTextureTarget( GLenum target )
+{
+	return target == GL_TEXTURE_1D ? GL_TEXTURE_2D : target;
+}
+
+static struct TextureShadow *FindTextureShadow( GLuint texture, GLenum target, GLint level, GLboolean create )
+{
+	target = ShadowTextureTarget( target );
+	for( size_t i = 0; i < textureShadowCount; ++i )
+		if( textureShadows[i].texture == texture && textureShadows[i].target == target && textureShadows[i].level == level )
+			return &textureShadows[i];
+	if( !create )
+		return NULL;
+	if( textureShadowCount == textureShadowCapacity )
+	{
+		size_t capacity = textureShadowCapacity ? textureShadowCapacity * 2 : 32;
+		if( capacity < textureShadowCapacity || capacity > SIZE_MAX / sizeof( *textureShadows ))
+			return NULL;
+		struct TextureShadow *entries = (struct TextureShadow *)realloc( textureShadows, capacity * sizeof( *entries ));
+		if( !entries )
+			return NULL;
+		textureShadows = entries;
+		textureShadowCapacity = capacity;
+	}
+	struct TextureShadow *entry = &textureShadows[textureShadowCount++];
+	memset( entry, 0, sizeof( *entry ));
+	entry->texture = texture;
+	entry->target = target;
+	entry->level = level;
+	return entry;
+}
+
+static size_t PixelFormatComponents( GLenum format )
+{
+	switch( format )
+	{
+	case GL_ALPHA:
+	case GL_LUMINANCE:
+	case GL_RED:
+	case GL_GREEN:
+	case GL_BLUE: return 1;
+	case GL_LUMINANCE_ALPHA: return 2;
+	case GL_RGB: return 3;
+	case GL_RGBA: return 4;
+	default: return 0;
+	}
+}
+
+static size_t AlignedPixelRowSize( size_t size, GLint alignment )
+{
+	size_t padding = (size_t)alignment - 1;
+	if( size > SIZE_MAX - padding )
+		return SIZE_MAX;
+	return ( size + padding ) & ~padding;
+}
+
+static void InvalidateTextureShadow( GLuint texture, GLenum target, GLint level )
+{
+	struct TextureShadow *entry = FindTextureShadow( texture, target, level, GL_FALSE );
+	if( entry )
+	{
+		entry->readable = GL_FALSE;
+		entry->compressedReadable = GL_FALSE;
+	}
+}
+
+static void DeleteTextureShadow( GLuint texture )
+{
+	if( tmuState0.boundtexture.value == texture ) tmuState0.boundtexture.value = 0;
+	if( tmuState1.boundtexture.value == texture ) tmuState1.boundtexture.value = 0;
+	for( size_t i = 0; i < textureShadowCount; )
+	{
+		if( textureShadows[i].texture == texture )
+		{
+			free( textureShadows[i].pixels );
+			textureShadows[i] = textureShadows[--textureShadowCount];
+		}
+		else
+			++i;
+	}
+}
+
+static void StoreTextureShadow( GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels )
+{
+	struct TextureShadow *entry = FindTextureShadow( activetmuState->boundtexture.value, target, level, GL_TRUE );
+	if( !entry )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	free( entry->pixels );
+	entry->pixels = NULL;
+	entry->dataSize = 0;
+	entry->compressed = GL_FALSE;
+	entry->compressedReadable = GL_FALSE;
+	entry->internalFormat = internalFormat;
+	entry->width = width;
+	entry->height = height;
+	entry->format = format;
+	entry->type = type;
+	entry->readable = GL_FALSE;
+	size_t components = PixelFormatComponents( format );
+	if( !pixels || width < 0 || height < 0 || type != GL_UNSIGNED_BYTE || !components )
+		return;
+	if((size_t)width > SIZE_MAX / components )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	size_t rowBytes = (size_t)width * components;
+	if((size_t)height && rowBytes > SIZE_MAX / (size_t)height )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	size_t rowStride = AlignedPixelRowSize( rowBytes, textureUnpackAlignment );
+	if( rowStride == SIZE_MAX || (size_t)height > SIZE_MAX / (rowStride ? rowStride : 1) )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	size_t totalBytes = rowBytes * (size_t)height;
+	entry->pixels = (GLubyte *)malloc( totalBytes ? totalBytes : 1 );
+	if( !entry->pixels )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	for( GLsizei y = 0; y < height; ++y )
+		memcpy( entry->pixels + (size_t)y * rowBytes, (const GLubyte *)pixels + (size_t)y * rowStride, rowBytes );
+	entry->dataSize = totalBytes;
+	entry->readable = GL_TRUE;
+}
+
+static void StoreCompressedTextureShadow( GLenum target, GLint level, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei imageSize, const GLvoid *data )
+{
+	struct TextureShadow *entry = FindTextureShadow( activetmuState->boundtexture.value, target, level, GL_TRUE );
+	if( !entry )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	free( entry->pixels );
+	entry->pixels = NULL;
+	entry->dataSize = 0;
+	entry->readable = GL_FALSE;
+	entry->compressedReadable = GL_FALSE;
+	entry->compressed = GL_TRUE;
+	entry->internalFormat = (GLint)internalFormat;
+	entry->width = width;
+	entry->height = height;
+	entry->format = internalFormat;
+	entry->type = GL_UNSIGNED_BYTE;
+	if( imageSize < 0 || ( imageSize && !data ))
+	{
+		SetWrapperError( imageSize < 0 ? GL_INVALID_VALUE : GL_INVALID_OPERATION );
+		return;
+	}
+	if( imageSize )
+	{
+		entry->pixels = (GLubyte *)malloc((size_t)imageSize);
+		if( !entry->pixels )
+		{
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return;
+		}
+		memcpy( entry->pixels, data, (size_t)imageSize );
+	}
+	entry->dataSize = (size_t)imageSize;
+	entry->compressedReadable = GL_TRUE;
+}
+
+static void UpdateTextureShadow( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels )
+{
+	struct TextureShadow *entry = FindTextureShadow( activetmuState->boundtexture.value, target, level, GL_FALSE );
+	if( !entry )
+		return;
+	if( entry->compressed )
+	{
+		entry->compressedReadable = GL_FALSE;
+		return;
+	}
+	if( !entry->readable || !pixels || xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || type != entry->type || format != entry->format || type != GL_UNSIGNED_BYTE || xoffset > entry->width - width || yoffset > entry->height - height )
+	{
+		entry->readable = GL_FALSE;
+		return;
+	}
+	size_t components = PixelFormatComponents( format );
+	if( !components || (size_t)width > SIZE_MAX / components || (size_t)entry->width > SIZE_MAX / components )
+	{
+		entry->readable = GL_FALSE;
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	size_t rowBytes = (size_t)width * components;
+	size_t srcStride = AlignedPixelRowSize( rowBytes, textureUnpackAlignment );
+	size_t dstStride = (size_t)entry->width * components;
+	if( srcStride == SIZE_MAX || ((size_t)height && srcStride > SIZE_MAX / (size_t)height ) || ((size_t)entry->height && dstStride > SIZE_MAX / (size_t)entry->height ))
+	{
+		entry->readable = GL_FALSE;
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	for( GLsizei y = 0; y < height; ++y )
+		memcpy( entry->pixels + ((size_t)yoffset + (size_t)y) * dstStride + (size_t)xoffset * components,
+			(const GLubyte *)pixels + (size_t)y * srcStride, rowBytes );
+}
+
+static void DecodeShadowPixel( const struct TextureShadow *entry, const GLubyte *source, GLubyte rgba[4] )
+{
+	rgba[0] = rgba[1] = rgba[2] = rgba[3] = 255;
+	switch( entry->format )
+	{
+	case GL_RGBA: memcpy( rgba, source, 4 ); break;
+	case GL_RGB: memcpy( rgba, source, 3 ); break;
+	case GL_ALPHA: rgba[3] = source[0]; break;
+	case GL_LUMINANCE: rgba[0] = rgba[1] = rgba[2] = source[0]; break;
+	case GL_LUMINANCE_ALPHA: rgba[0] = rgba[1] = rgba[2] = source[0]; rgba[3] = source[1]; break;
+	case GL_RED: rgba[0] = source[0]; break;
+	case GL_GREEN: rgba[1] = source[0]; break;
+	case GL_BLUE: rgba[2] = source[0]; break;
+	default: break;
+	}
+}
+
+static void ReadTextureShadow( GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels )
+{
+	struct TextureShadow *entry = FindTextureShadow( activetmuState->boundtexture.value, target, level, GL_FALSE );
+	if( !pixels )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	if( !entry || !entry->readable )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	if( type != GL_UNSIGNED_BYTE )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+	size_t components = PixelFormatComponents( format );
+	if( !components )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+	size_t srcComponents = PixelFormatComponents( entry->format );
+	if((size_t)entry->width > SIZE_MAX / components || (size_t)entry->width > SIZE_MAX / srcComponents )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	size_t rowBytes = (size_t)entry->width * components;
+	size_t dstStride = AlignedPixelRowSize( rowBytes, texturePackAlignment );
+	size_t srcStride = (size_t)entry->width * srcComponents;
+	if( dstStride == SIZE_MAX || (size_t)entry->height > SIZE_MAX / (dstStride ? dstStride : 1) )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	for( GLsizei y = 0; y < entry->height; ++y )
+	{
+		GLubyte *dst = (GLubyte *)pixels + (size_t)y * dstStride;
+		for( GLsizei x = 0; x < entry->width; ++x )
+		{
+			GLubyte rgba[4];
+			DecodeShadowPixel( entry, entry->pixels + (size_t)y * srcStride + (size_t)x * srcComponents, rgba );
+			switch( format )
+			{
+			case GL_RGBA: memcpy( dst + (size_t)x * 4, rgba, 4 ); break;
+			case GL_RGB: memcpy( dst + (size_t)x * 3, rgba, 3 ); break;
+			case GL_ALPHA: dst[x] = rgba[3]; break;
+			case GL_LUMINANCE: dst[x] = (GLubyte)(( 77u * rgba[0] + 150u * rgba[1] + 29u * rgba[2] + 128u ) >> 8); break;
+			case GL_LUMINANCE_ALPHA: dst[(size_t)x * 2] = (GLubyte)(( 77u * rgba[0] + 150u * rgba[1] + 29u * rgba[2] + 128u ) >> 8); dst[(size_t)x * 2 + 1] = rgba[3]; break;
+			case GL_RED: dst[x] = rgba[0]; break;
+			case GL_GREEN: dst[x] = rgba[1]; break;
+			case GL_BLUE: dst[x] = rgba[2]; break;
+			default: break;
+			}
+		}
+	}
+}
+
+static struct BufferShadow *FindBufferShadow( GLuint id, GLboolean create )
+{
+	if( !id )
+		return NULL;
+	for( size_t i = 0; i < bufferShadowCount; ++i )
+		if( bufferShadows[i].id == id )
+			return &bufferShadows[i];
+	if( !create )
+		return NULL;
+	if( bufferShadowCount == bufferShadowCapacity )
+	{
+		size_t capacity = bufferShadowCapacity ? bufferShadowCapacity * 2 : 16;
+		if( capacity < bufferShadowCapacity || capacity > SIZE_MAX / sizeof( *bufferShadows ))
+			return NULL;
+		struct BufferShadow *entries = (struct BufferShadow *)realloc( bufferShadows, capacity * sizeof( *entries ));
+		if( !entries )
+			return NULL;
+		bufferShadows = entries;
+		bufferShadowCapacity = capacity;
+	}
+	struct BufferShadow *entry = &bufferShadows[bufferShadowCount++];
+	memset( entry, 0, sizeof( *entry ));
+	entry->id = id;
+	return entry;
+}
+
+static GLuint BoundBufferForTarget( GLenum target )
+{
+	if( target == GL_ARRAY_BUFFER_ARB ) return boundArrayBuffer;
+	if( target == GL_ELEMENT_ARRAY_BUFFER_ARB ) return boundElementArrayBuffer;
+	return 0;
+}
+
+static void DeleteBufferShadow( GLuint id )
+{
+	for( size_t i = 0; i < bufferShadowCount; )
+	{
+		if( bufferShadows[i].id == id )
+		{
+			free( bufferShadows[i].data );
+			bufferShadows[i] = bufferShadows[--bufferShadowCount];
+		}
+		else
+			++i;
+	}
+	if( boundArrayBuffer == id ) boundArrayBuffer = 0;
+	if( boundElementArrayBuffer == id ) boundElementArrayBuffer = 0;
+}
+
+void InitGLStructs( void)
+{
+	for( size_t i = 0; i < textureShadowCount; ++i )
+		free( textureShadows[i].pixels );
+	free( textureShadows );
+	textureShadows = NULL;
+	textureShadowCount = 0;
+	textureShadowCapacity = 0;
+	texturePackAlignment = textureUnpackAlignment = 4;
+	for( size_t i = 0; i < bufferShadowCount; ++i )
+		free( bufferShadows[i].data );
+	free( bufferShadows );
+	bufferShadows = NULL;
+	bufferShadowCount = 0;
+	bufferShadowCapacity = 0;
+	boundArrayBuffer = boundElementArrayBuffer = 0;
+	for( size_t i = 0; i < DISPLAY_LIST_COUNT; ++i )
+		free( displayLists[i].commands );
+	memset( displayLists, 0, sizeof( displayLists ));
+	compilingDisplayList = NULL;
+	displayListCompileMode = 0;
+	executingDisplayList = GL_FALSE;
+	displayListDepth = 0;
+	nextDisplayListId = 1;
+	memset( texgenStates, 0, sizeof( texgenStates ));
+	for( size_t unit = 0; unit < 2; ++unit )
+	{
+		for( size_t coord = 0; coord < 4; ++coord )
+		{
+			texgenStates[unit][coord].mode = GL_EYE_LINEAR;
+			texgenStates[unit][coord].objectPlane[coord] = 1.0f;
+			texgenStates[unit][coord].eyePlane[coord] = 1.0f;
+		}
+	}
+	texgenModelViewValid = GL_FALSE;
+
 	ptrVertexAttribArray = vertexattribs;
 	ptrVertexAttribArrayMark = ptrVertexAttribArray;
 	ptrIndexArray = indexArray;
@@ -432,6 +942,8 @@ void nanoGL_Reset( void )
 
 void GL_MANGLE( glBegin )( GLenum mode )
 {
+	if( RecordDisplayListCommand( DL_BEGIN, mode, NULL ))
+		return;
 	GLenum batchmode;
 
 	if( mode == GL_POINTS )
@@ -448,6 +960,7 @@ void GL_MANGLE( glBegin )( GLenum mode )
 	}
 
 	wrapperPrimitiveMode = mode;
+	texgenModelViewValid = GL_FALSE;
 	vertexMark = vertexCount;
 	ptrVertexAttribArrayMark = ptrVertexAttribArray;
 	indexbase = indexCount;
@@ -455,6 +968,8 @@ void GL_MANGLE( glBegin )( GLenum mode )
 
 void GL_MANGLE( glEnd )( void )
 {
+	if( RecordDisplayListCommand( DL_END, 0, NULL ))
+		return;
 	GLuint blockverts = ((unsigned char *)ptrVertexAttribArray - (unsigned char *)ptrVertexAttribArrayMark ) / sizeof( VertexAttrib );
 	GLuint minverts;
 
@@ -626,8 +1141,53 @@ void GL_MANGLE( glEnd )( void )
 		FlushOnStateChange();
 }
 
+static int TexGenCoordIndex( GLenum coord )
+{
+	switch( coord )
+	{
+	case GL_TEXTURE_GEN_S: return 0;
+	case GL_TEXTURE_GEN_T: return 1;
+	case GL_TEXTURE_GEN_R: return 2;
+	case GL_TEXTURE_GEN_Q: return 3;
+	default: return -1;
+	}
+}
+
+static int ActiveTextureUnitIndex( void )
+{
+	if( activetmu == GL_TEXTURE0 ) return 0;
+	if( activetmu == GL_TEXTURE1 ) return 1;
+	return -1;
+}
+
+static GLboolean AnyTexGenEnabled( void )
+{
+	for( size_t unit = 0; unit < 2; ++unit )
+		for( size_t coord = 0; coord < 4; ++coord )
+			if( texgenStates[unit][coord].enabled )
+				return GL_TRUE;
+	return GL_FALSE;
+}
+
 void GL_MANGLE( glEnable )( GLenum cap )
 {
+	int texgenCoord = TexGenCoordIndex( cap );
+	if( texgenCoord >= 0 )
+	{
+		int unit = ActiveTextureUnitIndex();
+		if( unit < 0 )
+		{
+			SetWrapperError( GL_INVALID_ENUM );
+			return;
+		}
+		if( !texgenStates[unit][texgenCoord].enabled )
+		{
+			FlushOnStateChange();
+			texgenStates[unit][texgenCoord].enabled = GL_TRUE;
+			texgenModelViewValid = GL_FALSE;
+		}
+		return;
+	}
 	if( skipnanogl )
 	{
 		glEsImpl->glEnable( cap );
@@ -933,6 +1493,23 @@ void GL_MANGLE( glEnable )( GLenum cap )
 
 void GL_MANGLE( glDisable )( GLenum cap )
 {
+	int texgenCoord = TexGenCoordIndex( cap );
+	if( texgenCoord >= 0 )
+	{
+		int unit = ActiveTextureUnitIndex();
+		if( unit < 0 )
+		{
+			SetWrapperError( GL_INVALID_ENUM );
+			return;
+		}
+		if( texgenStates[unit][texgenCoord].enabled )
+		{
+			FlushOnStateChange();
+			texgenStates[unit][texgenCoord].enabled = GL_FALSE;
+			texgenModelViewValid = GL_FALSE;
+		}
+		return;
+	}
 	if( skipnanogl )
 	{
 		glEsImpl->glDisable( cap );
@@ -1241,6 +1818,11 @@ void GL_MANGLE( glVertex2f )( GLfloat x, GLfloat y )
 	GL_MANGLE_NAME( glVertex3f )( x, y, 0.0f );
 }
 
+void GL_MANGLE( glVertex2i )( GLint x, GLint y )
+{
+	GL_MANGLE_NAME( glVertex2f )((GLfloat)x, (GLfloat)y );
+}
+
 static inline unsigned int ClampTo255( float value )
 {
 	if( value <= 0.0f )
@@ -1252,6 +1834,9 @@ static inline unsigned int ClampTo255( float value )
 
 void GL_MANGLE( glColor3f )( GLfloat red, GLfloat green, GLfloat blue )
 {
+	const GLfloat color[4] = { red, green, blue, 1.0f };
+	if( RecordDisplayListCommand( DL_COLOR4, 0, color ))
+		return;
 	currentVertexAttrib.red = (unsigned char)ClampTo255( red * 255.0f );
 	currentVertexAttrib.green = (unsigned char)ClampTo255( green * 255.0f );
 	currentVertexAttrib.blue = (unsigned char)ClampTo255( blue * 255.0f );
@@ -1273,8 +1858,12 @@ static void SetCurrentTexCoord( GLenum target, const GLfloat *coords, GLint coun
 		return;
 	}
 
-	memcpy( destination, defaults, sizeof( defaults ));
-	memcpy( destination, coords, (size_t)count * sizeof( GLfloat ));
+	GLfloat values[4];
+	memcpy( values, defaults, sizeof( values ));
+	memcpy( values, coords, (size_t)count * sizeof( GLfloat ));
+	if( RecordDisplayListCommand( DL_TEXCOORD4, target, values ))
+		return;
+	memcpy( destination, values, sizeof( values ));
 
 	if( skipnanogl )
 		glEsImpl->glMultiTexCoord4f( target, destination[0], destination[1], destination[2], destination[3] );
@@ -1345,6 +1934,9 @@ void GL_MANGLE( glLoadIdentity )( void )
 
 void GL_MANGLE( glColor4f )( GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha )
 {
+	const GLfloat color[4] = { red, green, blue, alpha };
+	if( RecordDisplayListCommand( DL_COLOR4, 0, color ))
+		return;
 	currentVertexAttrib.red = (unsigned char)ClampTo255( red * 255.0f );
 	currentVertexAttrib.green = (unsigned char)ClampTo255( green * 255.0f );
 	currentVertexAttrib.blue = (unsigned char)ClampTo255( blue * 255.0f );
@@ -1390,6 +1982,12 @@ void GL_MANGLE( glLightModelfv )( GLenum pname, const GLfloat *params )
 	FlushOnStateChange();
 
 	glEsImpl->glLightModelfv( pname, params );
+}
+
+void GL_MANGLE( glLightModeli )( GLenum pname, GLint param )
+{
+	FlushOnStateChange();
+	glEsImpl->glLightModelf( pname, (GLfloat)param );
 }
 
 void GL_MANGLE( glMaterialf )( GLenum face, GLenum pname, GLfloat param )
@@ -1459,33 +2057,61 @@ void GL_MANGLE( glTexParameterfv )( GLenum target, GLenum pname, const GLfloat *
 
 void GL_MANGLE( glTexImage2D )( GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels )
 {
-	unsigned char *data = (unsigned char *)pixels;
-
-	if( pixels && format == GL_RGBA && ( internalformat == GL_RGB || internalformat == GL_RGB8 || internalformat == GL_RGB5 || internalformat == GL_LUMINANCE || internalformat == GL_LUMINANCE8 || internalformat == GL_LUMINANCE4 )) // strip alpha from texture
+	if( width < 0 || height < 0 || border != 0 )
 	{
-		const union
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	GLint requestedInternalFormat = internalformat;
+	const GLvoid *data = pixels;
+	GLubyte *converted = NULL;
+	if( pixels && type == GL_UNSIGNED_BYTE && format == GL_RGBA && ( internalformat == GL_RGB || internalformat == GL_RGB8 || internalformat == GL_RGB5 || internalformat == GL_LUMINANCE || internalformat == GL_LUMINANCE8 || internalformat == GL_LUMINANCE4 ))
+	{
+		if( width && (size_t)width > SIZE_MAX / 4 )
 		{
-			unsigned char b[4];
-			unsigned int u;
-		} alphamask = { { 0, 0, 0, 255 } };
-
-		const unsigned int *restrict in = (const unsigned int *)pixels;
-		unsigned int *restrict out;
-		int size = width * height;
-
-		data = (unsigned char *)malloc( size * 4 );
-		out = (unsigned int *)data;
-
-		// help compiler to vectorize the loop...
-		for( int i = 0; i < size; i++ )
-			out[i] = in[i] | alphamask.u;
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return;
+		}
+		size_t rowBytes = (size_t)width * 4;
+		if((size_t)height && rowBytes > SIZE_MAX / (size_t)height )
+		{
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return;
+		}
+		size_t convertedStride = AlignedPixelRowSize( rowBytes, textureUnpackAlignment );
+		if( convertedStride == SIZE_MAX || ((size_t)height && convertedStride > SIZE_MAX / (size_t)height ))
+		{
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return;
+		}
+		size_t convertedSize = convertedStride * (size_t)height;
+		converted = (GLubyte *)malloc( convertedSize ? convertedSize : 1 );
+		if( !converted )
+		{
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return;
+		}
+		size_t rowStride = AlignedPixelRowSize( rowBytes, textureUnpackAlignment );
+		for( GLsizei y = 0; y < height; ++y )
+		{
+			const GLubyte *src = (const GLubyte *)pixels + (size_t)y * rowStride;
+			GLubyte *dst = converted + (size_t)y * convertedStride;
+			for( GLsizei x = 0; x < width; ++x )
+			{
+				dst[(size_t)x * 4] = src[(size_t)x * 4];
+				dst[(size_t)x * 4 + 1] = src[(size_t)x * 4 + 1];
+				dst[(size_t)x * 4 + 2] = src[(size_t)x * 4 + 2];
+				dst[(size_t)x * 4 + 3] = 255;
+			}
+		}
+		data = converted;
 	}
 
 	internalformat = format;
+	FlushOnStateChange();
 	glEsImpl->glTexImage2D( target, level, internalformat, width, height, border, format, type, data );
-
-	if( data != pixels )
-		free( data );
+	StoreTextureShadow( target, level, requestedInternalFormat, width, height, format, type, data );
+	free( converted );
 }
 
 void GL_MANGLE( glDrawBuffer )( GLenum mode )
@@ -1501,10 +2127,20 @@ void GL_MANGLE( glTranslatef )( GLfloat x, GLfloat y, GLfloat z )
 	glEsImpl->glTranslatef( x, y, z );
 }
 
+void GL_MANGLE( glTranslate )( GLdouble x, GLdouble y, GLdouble z )
+{
+	GL_MANGLE_NAME( glTranslatef )((GLfloat)x, (GLfloat)y, (GLfloat)z );
+}
+
 void GL_MANGLE( glRotatef )( GLfloat angle, GLfloat x, GLfloat y, GLfloat z )
 {
 	FlushOnStateChange();
 	glEsImpl->glRotatef( angle, x, y, z );
+}
+
+void GL_MANGLE( glRotate )( GLdouble angle, GLdouble x, GLdouble y, GLdouble z )
+{
+	GL_MANGLE_NAME( glRotatef )((GLfloat)angle, (GLfloat)x, (GLfloat)y, (GLfloat)z );
 }
 
 void GL_MANGLE( glScalef )( GLfloat x, GLfloat y, GLfloat z )
@@ -1558,6 +2194,45 @@ void GL_MANGLE( glGetFloatv )( GLenum pname, GLfloat *params )
 	glEsImpl->glGetFloatv( pname, params );
 }
 
+void GL_MANGLE( glGetBooleanv )( GLenum pname, GLboolean *params )
+{
+	if( !params )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	FlushOnStateChange();
+	glEsImpl->glGetBooleanv( pname, params );
+}
+
+void GL_MANGLE( glGetDoublev )( GLenum pname, GLdouble *params )
+{
+	if( !params )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	size_t count = 1;
+	switch( pname )
+	{
+	case GL_MODELVIEW_MATRIX:
+	case GL_PROJECTION_MATRIX:
+	case GL_TEXTURE_MATRIX: count = 16; break;
+	case GL_CURRENT_COLOR:
+	case GL_CURRENT_TEXTURE_COORDS:
+	case GL_COLOR_CLEAR_VALUE:
+	case GL_VIEWPORT:
+	case GL_SCISSOR_BOX: count = 4; break;
+	case GL_CURRENT_NORMAL: count = 3; break;
+	case GL_DEPTH_RANGE: count = 2; break;
+	default: break;
+	}
+	GLfloat values[16] = { 0 };
+	GL_MANGLE_NAME( glGetFloatv )( pname, values );
+	for( size_t i = 0; i < count; ++i )
+		params[i] = values[i];
+}
+
 void GL_MANGLE( glCullFace )( GLenum mode )
 {
 	if( nanoglState.cullface == mode )
@@ -1605,78 +2280,108 @@ static void CheckQuadsOverflow( void )
 	}
 }
 
+static GLboolean TexGenNeedsEyeMatrix( void )
+{
+	for( size_t unit = 0; unit < 2; ++unit )
+		for( size_t coord = 0; coord < 4; ++coord )
+			if( texgenStates[unit][coord].enabled && texgenStates[unit][coord].mode == GL_EYE_LINEAR )
+				return GL_TRUE;
+	return GL_FALSE;
+}
+
+static void GenerateTextureCoordinates( VertexAttrib *attrib, GLfloat x, GLfloat y, GLfloat z, GLfloat w )
+{
+	GLfloat object[4] = { x, y, z, w };
+	GLfloat eye[4];
+	if( TexGenNeedsEyeMatrix() && !texgenModelViewValid )
+	{
+		glEsImpl->glGetFloatv( GL_MODELVIEW_MATRIX, texgenModelView );
+		texgenModelViewValid = GL_TRUE;
+	}
+	if( TexGenNeedsEyeMatrix() )
+	{
+		eye[0] = texgenModelView[0] * x + texgenModelView[4] * y + texgenModelView[8] * z + texgenModelView[12] * w;
+		eye[1] = texgenModelView[1] * x + texgenModelView[5] * y + texgenModelView[9] * z + texgenModelView[13] * w;
+		eye[2] = texgenModelView[2] * x + texgenModelView[6] * y + texgenModelView[10] * z + texgenModelView[14] * w;
+		eye[3] = texgenModelView[3] * x + texgenModelView[7] * y + texgenModelView[11] * z + texgenModelView[15] * w;
+	}
+	for( size_t unit = 0; unit < 2; ++unit )
+	{
+		GLfloat *coords = unit == 0 ? &attrib->s : &attrib->s_multi;
+		for( size_t axis = 0; axis < 4; ++axis )
+		{
+			const struct texgenstate *state = &texgenStates[unit][axis];
+			if( !state->enabled )
+				continue;
+			const GLfloat *position = state->mode == GL_OBJECT_LINEAR ? object : eye;
+			const GLfloat *plane = state->mode == GL_OBJECT_LINEAR ? state->objectPlane : state->eyePlane;
+			coords[axis] = plane[0] * position[0] + plane[1] * position[1] + plane[2] * position[2] + plane[3] * position[3];
+		}
+	}
+}
+
 static void StoreVertex( GLfloat x, GLfloat y, GLfloat z, GLfloat w )
 {
 	CheckQuadsOverflow();
+	VertexAttrib vertex = currentVertexAttrib;
+	GenerateTextureCoordinates( &vertex, x, y, z, w );
 
 	GLfloat *vert = (GLfloat *)ptrVertexAttribArray++;
 	*vert++ = x;
 	*vert++ = y;
 	*vert++ = z;
 	*vert++ = w;
-	memcpy( vert, &currentVertexAttrib.nx, sizeof( VertexAttrib ) - 4 * sizeof( GLfloat ));
+	memcpy( vert, &vertex.nx, sizeof( VertexAttrib ) - 4 * sizeof( GLfloat ));
 }
 
 void GL_MANGLE( glVertex3f )( GLfloat x, GLfloat y, GLfloat z )
 {
+	const GLfloat vertex[4] = { x, y, z, 1.0f };
+	if( RecordDisplayListCommand( DL_VERTEX3, 0, vertex ))
+		return;
 	StoreVertex( x, y, z, 1.0f );
 }
 
 void GL_MANGLE( glVertex4f )( GLfloat x, GLfloat y, GLfloat z, GLfloat w )
 {
+	const GLfloat vertex[4] = { x, y, z, w };
+	if( RecordDisplayListCommand( DL_VERTEX4, 0, vertex ))
+		return;
 	StoreVertex( x, y, z, w );
 }
 
 void GL_MANGLE( glVertex4fv )( const GLfloat *v )
 {
-	StoreVertex( v[0], v[1], v[2], v[3] );
+	GL_MANGLE_NAME( glVertex4f )( v[0], v[1], v[2], v[3] );
 }
 
 void GL_MANGLE( glColor4fv )( const GLfloat *v )
 {
-	currentVertexAttrib.red = (unsigned char)ClampTo255( v[0] * 255.0f );
-	currentVertexAttrib.green = (unsigned char)ClampTo255( v[1] * 255.0f );
-	currentVertexAttrib.blue = (unsigned char)ClampTo255( v[2] * 255.0f );
-	currentVertexAttrib.alpha = (unsigned char)ClampTo255( v[3] * 255.0f );
-	if( skipnanogl )
-		glEsImpl->glColor4f( currentVertexAttrib.red / 255.0f, currentVertexAttrib.green / 255.0f, currentVertexAttrib.blue / 255.0f, currentVertexAttrib.alpha / 255.0f );
+	GL_MANGLE_NAME( glColor4f )( v[0], v[1], v[2], v[3] );
 }
 
 void GL_MANGLE( glColor3ubv )( const GLubyte *v )
 {
-	currentVertexAttrib.red = v[0];
-	currentVertexAttrib.green = v[1];
-	currentVertexAttrib.blue = v[2];
-	currentVertexAttrib.alpha = 255;
-	if( skipnanogl )
-		glEsImpl->glColor4f( currentVertexAttrib.red / 255.0f, currentVertexAttrib.green / 255.0f, currentVertexAttrib.blue / 255.0f, currentVertexAttrib.alpha / 255.0f );
+	GL_MANGLE_NAME( glColor3ub )( v[0], v[1], v[2] );
 }
 
 void GL_MANGLE( glColor4ubv )( const GLubyte *v )
 {
-	// *((unsigned int*)(&currentVertexAttrib.red)) = *((unsigned int*)(v));
-	currentVertexAttrib.red = v[0];
-	currentVertexAttrib.green = v[1];
-	currentVertexAttrib.blue = v[2];
-	currentVertexAttrib.alpha = v[3];
-	if( skipnanogl )
-		glEsImpl->glColor4f( currentVertexAttrib.red / 255.0f, currentVertexAttrib.green / 255.0f, currentVertexAttrib.blue / 255.0f, currentVertexAttrib.alpha / 255.0f );
+	GL_MANGLE_NAME( glColor4ub )( v[0], v[1], v[2], v[3] );
 }
 
 void GL_MANGLE( glColor3fv )( const GLfloat *v )
 {
-	currentVertexAttrib.red = (unsigned char)ClampTo255( v[0] * 255.0f );
-	currentVertexAttrib.green = (unsigned char)ClampTo255( v[1] * 255.0f );
-	currentVertexAttrib.blue = (unsigned char)ClampTo255( v[2] * 255.0f );
-	currentVertexAttrib.alpha = 255;
-	if( skipnanogl )
-		glEsImpl->glColor4f( currentVertexAttrib.red / 255.0f, currentVertexAttrib.green / 255.0f, currentVertexAttrib.blue / 255.0f, currentVertexAttrib.alpha / 255.0f );
+	GL_MANGLE_NAME( glColor3f )( v[0], v[1], v[2] );
 }
 
 // -- nicknekit: xash3d funcs --
 
 void GL_MANGLE( glColor4ub )( GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha )
 {
+	const GLfloat color[4] = { red / 255.0f, green / 255.0f, blue / 255.0f, alpha / 255.0f };
+	if( RecordDisplayListCommand( DL_COLOR4, 0, color ))
+		return;
 	currentVertexAttrib.red = red;
 	currentVertexAttrib.green = green;
 	currentVertexAttrib.blue = blue;
@@ -1687,6 +2392,9 @@ void GL_MANGLE( glColor4ub )( GLubyte red, GLubyte green, GLubyte blue, GLubyte 
 
 void GL_MANGLE( glColor3ub )( GLubyte red, GLubyte green, GLubyte blue )
 {
+	const GLfloat color[4] = { red / 255.0f, green / 255.0f, blue / 255.0f, 1.0f };
+	if( RecordDisplayListCommand( DL_COLOR4, 0, color ))
+		return;
 	currentVertexAttrib.red = red;
 	currentVertexAttrib.green = green;
 	currentVertexAttrib.blue = blue;
@@ -1697,6 +2405,9 @@ void GL_MANGLE( glColor3ub )( GLubyte red, GLubyte green, GLubyte blue )
 
 void GL_MANGLE( glNormal3f )( GLfloat nx, GLfloat ny, GLfloat nz )
 {
+	const GLfloat normal[4] = { nx, ny, nz, 0.0f };
+	if( RecordDisplayListCommand( DL_NORMAL3, 0, normal ))
+		return;
 	currentVertexAttrib.nx = nx;
 	currentVertexAttrib.ny = ny;
 	currentVertexAttrib.nz = nz;
@@ -1713,6 +2424,7 @@ void GL_MANGLE( glCopyTexImage2D )( GLenum target, GLint level, GLenum internalf
 {
 	FlushOnStateChange();
 	glEsImpl->glCopyTexImage2D( target, level, internalformat, x, y, width, height, border );
+	StoreTextureShadow( target, level, internalformat, width, height, GL_RGBA, GL_UNSIGNED_BYTE, NULL );
 }
 
 void GL_MANGLE( glTexImage1D )( GLenum target, GLint level, GLint internalformat, GLsizei width, GLint border, GLenum format, GLenum type, const GLvoid *pixels )
@@ -1758,22 +2470,74 @@ GLboolean GL_MANGLE( glIsTexture )( GLuint texture )
 	return glEsImpl->glIsTexture( texture );
 }
 
-// TODO: add native normal/reflection map texgen support
+static GLboolean SetTexGenParameter( GLenum coord, GLenum pname, const GLfloat *params )
+{
+	int index;
+	int unit = ActiveTextureUnitIndex();
+	if( unit < 0 )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return GL_FALSE;
+	}
+	switch( coord )
+	{
+	case GL_S: index = 0; break;
+	case GL_T: index = 1; break;
+	case GL_R: index = 2; break;
+	case GL_Q: index = 3; break;
+	default: SetWrapperError( GL_INVALID_ENUM ); return GL_FALSE;
+	}
+	if( !params )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return GL_FALSE;
+	}
+	struct texgenstate *state = &texgenStates[unit][index];
+	if( pname == GL_TEXTURE_GEN_MODE )
+	{
+		GLenum mode = (GLenum)params[0];
+		if( mode != GL_OBJECT_LINEAR && mode != GL_EYE_LINEAR )
+		{
+			SetWrapperError( mode == GL_SPHERE_MAP ? GL_INVALID_OPERATION : GL_INVALID_ENUM );
+			return GL_FALSE;
+		}
+		if( state->mode != mode )
+		{
+			FlushOnStateChange();
+			state->mode = mode;
+			texgenModelViewValid = GL_FALSE;
+		}
+		return GL_TRUE;
+	}
+	if( pname == GL_OBJECT_PLANE || pname == GL_EYE_PLANE )
+	{
+		GLfloat *plane = pname == GL_OBJECT_PLANE ? state->objectPlane : state->eyePlane;
+		if( memcmp( plane, params, 4 * sizeof( GLfloat )) != 0 )
+		{
+			FlushOnStateChange();
+			memcpy( plane, params, 4 * sizeof( GLfloat ));
+			texgenModelViewValid = GL_FALSE;
+		}
+		return GL_TRUE;
+	}
+	SetWrapperError( GL_INVALID_ENUM );
+	return GL_FALSE;
+}
+
+void GL_MANGLE( glTexGenf )( GLenum coord, GLenum pname, GLfloat param )
+{
+	(void)SetTexGenParameter( coord, pname, &param );
+}
 
 void GL_MANGLE( glTexGeni )( GLenum coord, GLenum pname, GLint param )
 {
-	(void)coord;
-	(void)pname;
-	(void)param;
-	SetWrapperError( GL_INVALID_OPERATION );
+	GLfloat value = (GLfloat)param;
+	(void)SetTexGenParameter( coord, pname, &value );
 }
 
 void GL_MANGLE( glTexGenfv )( GLenum coord, GLenum pname, const GLfloat *params )
 {
-	(void)coord;
-	(void)pname;
-	(void)params;
-	SetWrapperError( GL_INVALID_OPERATION );
+	(void)SetTexGenParameter( coord, pname, params );
 }
 
 // -- --//
@@ -1855,7 +2619,7 @@ void GL_MANGLE( glTexEnvf )( GLenum target, GLenum pname, GLfloat param )
 
 void GL_MANGLE( glVertex3fv )( const GLfloat *v )
 {
-	StoreVertex( v[0], v[1], v[2], 1.0f );
+	GL_MANGLE_NAME( glVertex3f )( v[0], v[1], v[2] );
 }
 
 void GL_MANGLE( glDepthMask )( GLboolean flag )
@@ -1950,6 +2714,7 @@ void GL_MANGLE( glTexSubImage2D )( GLenum target, GLint level, GLint xoffset, GL
 {
 	FlushOnStateChange();
 	glEsImpl->glTexSubImage2D( target, level, xoffset, yoffset, width, height, format, type, pixels );
+	UpdateTextureShadow( target, level, xoffset, yoffset, width, height, format, type, pixels );
 }
 
 void GL_MANGLE( glClearColor )( GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha )
@@ -2071,6 +2836,9 @@ void GL_MANGLE( glDeleteTextures )( GLsizei n, const GLuint *textures )
 {
 	FlushOnStateChange();
 	glEsImpl->glDeleteTextures( n, textures );
+	if( textures )
+		for( GLsizei i = 0; i < n; ++i )
+			DeleteTextureShadow( textures[i] );
 }
 
 void GL_MANGLE( glClearDepth )( GLclampd depth )
@@ -2306,10 +3074,142 @@ void GL_MANGLE( glLineWidth )( GLfloat width )
 	glEsImpl->glLineWidth( width );
 }
 
+GLuint GL_MANGLE( glGenLists )( GLsizei range )
+{
+	if( range < 0 )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return 0;
+	}
+	if( range == 0 || (size_t)range > DISPLAY_LIST_COUNT )
+		return 0;
+	size_t freeSlots = 0;
+	for( size_t i = 0; i < DISPLAY_LIST_COUNT; ++i )
+		if( displayLists[i].id == 0 )
+			++freeSlots;
+	if((size_t)range > freeSlots )
+		return 0;
+
+	GLuint candidate = nextDisplayListId ? nextDisplayListId : 1;
+	for( size_t tries = 0; tries < DISPLAY_LIST_COUNT; ++tries )
+	{
+		if( candidate > UINT_MAX - (GLuint)range )
+			candidate = 1;
+		GLboolean available = GL_TRUE;
+		for( GLsizei offset = 0; offset < range; ++offset )
+			if( FindDisplayList( candidate + (GLuint)offset ))
+			{
+				available = GL_FALSE;
+				break;
+			}
+		if( available )
+		{
+			for( GLsizei offset = 0; offset < range; ++offset )
+			{
+				for( size_t i = 0; i < DISPLAY_LIST_COUNT; ++i )
+					if( displayLists[i].id == 0 )
+					{
+						displayLists[i].id = candidate + (GLuint)offset;
+						break;
+					}
+			}
+			nextDisplayListId = candidate + (GLuint)range;
+			return candidate;
+		}
+		++candidate;
+	}
+	return 0;
+}
+
+void GL_MANGLE( glDeleteLists )( GLuint list, GLsizei range )
+{
+	if( range < 0 )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	if( compilingDisplayList )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	for( GLsizei offset = 0; offset < range && list <= UINT_MAX - (GLuint)offset; ++offset )
+	{
+		struct DisplayList *entry = FindDisplayList( list + (GLuint)offset );
+		if( entry )
+		{
+			free( entry->commands );
+			memset( entry, 0, sizeof( *entry ));
+		}
+	}
+}
+
+GLboolean GL_MANGLE( glIsList )( GLuint list )
+{
+	struct DisplayList *entry = FindDisplayList( list );
+	return entry && entry->compiled;
+}
+
+void GL_MANGLE( glNewList )( GLuint list, GLenum mode )
+{
+	if( compilingDisplayList || executingDisplayList )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	if( mode != GL_COMPILE && mode != GL_COMPILE_AND_EXECUTE )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+	struct DisplayList *entry = FindDisplayList( list );
+	if( !entry )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	FlushOnStateChange();
+	entry->count = 0;
+	entry->compiled = GL_FALSE;
+	compilingDisplayList = entry;
+	displayListCompileMode = mode;
+}
+
+void GL_MANGLE( glEndList )( void )
+{
+	if( !compilingDisplayList )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	compilingDisplayList->compiled = GL_TRUE;
+	compilingDisplayList = NULL;
+	displayListCompileMode = 0;
+}
+
 void GL_MANGLE( glCallList )( GLuint list )
 {
-	(void)list;
-	SetWrapperError( GL_INVALID_OPERATION );
+	if( RecordDisplayListCommand( DL_CALL, list, NULL ))
+		return;
+	struct DisplayList *entry = FindDisplayList( list );
+	if( !entry || !entry->compiled )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	if( displayListDepth >= DISPLAY_LIST_MAX_DEPTH )
+	{
+		SetWrapperError( GL_STACK_OVERFLOW );
+		return;
+	}
+	FlushOnStateChange();
+	GLboolean wasExecuting = executingDisplayList;
+	executingDisplayList = GL_TRUE;
+	++displayListDepth;
+	for( size_t i = 0; i < entry->count; ++i )
+		ExecuteDisplayListCommand( &entry->commands[i] );
+	--displayListDepth;
+	executingDisplayList = wasExecuting;
 }
 
 void GL_MANGLE( glColorMask )( GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha )
@@ -2412,6 +3312,11 @@ static GLushort *ExpandQuadIndices( GLenum *mode, GLsizei count, GLenum type, co
 
 void GL_MANGLE( glDrawElements )( GLenum mode, GLsizei count, GLenum type, const GLvoid *indices )
 {
+	if( AnyTexGenEnabled() )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return; // Texgen conversion currently applies to immediate/client-array-element vertices only.
+	}
 	GLsizei drawCount = count;
 	GLenum drawMode = mode;
 	GLenum drawType = type;
@@ -2770,6 +3675,16 @@ void GL_MANGLE( glMultiTexCoord2fARB )( GLenum target, GLfloat s, GLfloat t )
 	SetCurrentTexCoord( target, coords, 2 );
 }
 
+void GL_MANGLE( glMultiTexCoord2fvARB )( GLenum target, const GLfloat *v )
+{
+	if( !v )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	SetCurrentTexCoord( target, v, 2 );
+}
+
 void GL_MANGLE( glMultiTexCoord3fARB )( GLenum target, GLfloat s, GLfloat t, GLfloat r )
 {
 	const GLfloat coords[3] = { s, t, r };
@@ -2814,29 +3729,122 @@ void GL_MANGLE( glMultMatrixf )( const GLfloat *m )
 	glEsImpl->glMultMatrixf( m );
 }
 
+void GL_MANGLE( glMultMatrix )( const GLdouble *m )
+{
+	if( !m )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	GLfloat matrix[16];
+	for( size_t i = 0; i < 16; ++i )
+		matrix[i] = (GLfloat)m[i];
+	GL_MANGLE_NAME( glMultMatrixf )( matrix );
+}
+
 void GL_MANGLE( glCompressedTexImage2D )( GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data )
 {
+	if( width < 0 || height < 0 || border != 0 || imageSize < 0 || ( imageSize && !data ))
+	{
+		SetWrapperError( imageSize && !data ? GL_INVALID_OPERATION : GL_INVALID_VALUE );
+		return;
+	}
 	FlushOnStateChange();
 	glEsImpl->glCompressedTexImage2D( target, level, internalformat, width, height, border, imageSize, data );
+	StoreCompressedTextureShadow( target, level, internalformat, width, height, imageSize, data );
+}
+
+void GL_MANGLE( glCompressedTexImage2DARB )( GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data )
+{
+	GL_MANGLE_NAME( glCompressedTexImage2D )( target, level, internalformat, width, height, border, imageSize, data );
+}
+
+void GL_MANGLE( glCompressedTexSubImage2D )( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data )
+{
+	if( xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || imageSize < 0 || ( imageSize && !data ))
+	{
+		SetWrapperError( imageSize && !data ? GL_INVALID_OPERATION : GL_INVALID_VALUE );
+		return;
+	}
+	FlushOnStateChange();
+	glEsImpl->glCompressedTexSubImage2D( target, level, xoffset, yoffset, width, height, format, imageSize, data );
+	InvalidateTextureShadow( activetmuState->boundtexture.value, target, level );
+}
+
+void GL_MANGLE( glCompressedTexSubImage2DARB )( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data )
+{
+	GL_MANGLE_NAME( glCompressedTexSubImage2D )( target, level, xoffset, yoffset, width, height, format, imageSize, data );
+}
+
+void GL_MANGLE( glGetCompressedTexImageARB )( GLenum target, GLint level, GLvoid *pixels )
+{
+	FlushOnStateChange();
+	if( !pixels )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	struct TextureShadow *entry = FindTextureShadow( activetmuState->boundtexture.value, target, level, GL_FALSE );
+	if( !entry || !entry->compressed || !entry->compressedReadable )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	if( entry->dataSize )
+		memcpy( pixels, entry->pixels, entry->dataSize );
 }
 
 void GL_MANGLE( glGetTexImage )( GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels )
 {
-	// glGetTexImage is a desktop OpenGL command, not part of GLES 1.1.
-	// Keep the compatibility symbol for linkers, but fail explicitly rather
-	// than attempting to resolve a non-existent GLES entry point.
-	(void)target;
-	(void)level;
-	(void)format;
-	(void)type;
-	(void)pixels;
-	SetWrapperError( GL_INVALID_OPERATION );
+	FlushOnStateChange();
+	ReadTextureShadow( target, level, format, type, pixels );
+}
+
+void GL_MANGLE( glGetTexLevelParameteriv )( GLenum target, GLint level, GLenum pname, GLint *params )
+{
+	if( !params )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	struct TextureShadow *entry = FindTextureShadow( activetmuState->boundtexture.value, target, level, GL_FALSE );
+	if( !entry )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		*params = 0;
+		return;
+	}
+	switch( pname )
+	{
+	case GL_TEXTURE_WIDTH: *params = entry->width; break;
+	case GL_TEXTURE_HEIGHT: *params = entry->height; break;
+	case GL_TEXTURE_BORDER: *params = 0; break;
+	case GL_TEXTURE_INTERNAL_FORMAT: *params = entry->internalFormat; break;
+	case GL_TEXTURE_COMPRESSED_IMAGE_SIZE: *params = entry->dataSize > INT_MAX ? INT_MAX : (GLint)entry->dataSize; break;
+	case GL_TEXTURE_RED_SIZE: *params = entry->format == GL_RED || entry->format == GL_RGB || entry->format == GL_RGBA ? 8 : 0; break;
+	case GL_TEXTURE_GREEN_SIZE: *params = entry->format == GL_GREEN || entry->format == GL_RGB || entry->format == GL_RGBA ? 8 : 0; break;
+	case GL_TEXTURE_BLUE_SIZE: *params = entry->format == GL_BLUE || entry->format == GL_RGB || entry->format == GL_RGBA ? 8 : 0; break;
+	case GL_TEXTURE_ALPHA_SIZE: *params = entry->format == GL_ALPHA || entry->format == GL_LUMINANCE_ALPHA || entry->format == GL_RGBA ? 8 : 0; break;
+	default:
+		SetWrapperError( GL_INVALID_ENUM );
+		*params = 0;
+		break;
+	}
 }
 
 void GL_MANGLE( glPixelStorei )( GLenum pname, GLint param )
 {
+	if(( pname == GL_PACK_ALIGNMENT || pname == GL_UNPACK_ALIGNMENT ) && param != 1 && param != 2 && param != 4 && param != 8 )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
 	FlushOnStateChange();
 	glEsImpl->glPixelStorei( pname, param );
+	if( pname == GL_PACK_ALIGNMENT )
+		texturePackAlignment = param;
+	else if( pname == GL_UNPACK_ALIGNMENT )
+		textureUnpackAlignment = param;
 }
 
 void GL_MANGLE( glFogi )( GLenum pname, GLint param )
@@ -2951,6 +3959,11 @@ void GL_MANGLE( glTexEnvfv )( GLenum target, GLenum pname, const GLfloat *param 
 
 void GL_MANGLE( glDrawArrays )( GLenum mode, GLint first, GLsizei count )
 {
+	if( AnyTexGenEnabled() )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
 	if( mode == GL_QUADS || mode == GL_QUAD_STRIP )
 	{
 		if( skipnanogl )
@@ -3091,6 +4104,7 @@ void GL_MANGLE( glCopyTexSubImage2D )( GLenum target, GLint level, GLint xoffset
 {
 	FlushOnStateChange();
 	glEsImpl->glCopyTexSubImage2D( target, level, xoffset, yoffset, x, y, width, height );
+	InvalidateTextureShadow( activetmuState->boundtexture.value, target, level );
 }
 
 #define CHECK_FBO_PROC( proc ) do { if( !glEsImpl->proc ) { SetWrapperError( GL_INVALID_OPERATION ); return; } } while( 0 )
@@ -3171,6 +4185,7 @@ void GL_MANGLE( glFramebufferTexture2D )( GLenum target, GLenum attachment, GLen
 	CHECK_FBO_PROC( glFramebufferTexture2D );
 	FlushOnStateChange();
 	glEsImpl->glFramebufferTexture2D( target, attachment, textarget, texture, level );
+	InvalidateTextureShadow( texture, textarget, level );
 }
 
 void GL_MANGLE( glRenderbufferStorage )( GLenum target, GLenum internalformat, GLsizei width, GLsizei height )
@@ -3182,61 +4197,200 @@ void GL_MANGLE( glRenderbufferStorage )( GLenum target, GLenum internalformat, G
 
 #undef CHECK_FBO_PROC
 
-void GL_MANGLE( glBindBufferARB )( GLuint target, GLuint index )
+void GL_MANGLE( glBindBufferARB )( GLenum target, GLuint buffer )
 {
-	static int sindex;
-
-	if( index && !sindex && !skipnanogl )
-		FlushOnStateChange();
-	glEsImpl->glDisableClientState( GL_COLOR_ARRAY );
-	glEsImpl->glColor4f( currentVertexAttrib.red / 255.0f, currentVertexAttrib.green / 255.0f, currentVertexAttrib.blue / 255.0f, currentVertexAttrib.alpha / 255.0f );
-
-	if( target == 0x8892 )
+	if( target != GL_ARRAY_BUFFER_ARB && target != GL_ELEMENT_ARRAY_BUFFER_ARB )
 	{
-		skipnanogl = ( !!index ) || vboarray;
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
 	}
-	glEsImpl->glBindBuffer( target, index );
-	if( sindex && !index )
+	GLuint previous = BoundBufferForTarget( target );
+	if( target == GL_ARRAY_BUFFER_ARB )
 	{
-		arraysValid = GL_FALSE;
-		if( !skipnanogl )
+		if( buffer && !previous && !skipnanogl )
+			FlushOnStateChange();
+		glEsImpl->glDisableClientState( GL_COLOR_ARRAY );
+		glEsImpl->glColor4f( currentVertexAttrib.red / 255.0f, currentVertexAttrib.green / 255.0f, currentVertexAttrib.blue / 255.0f, currentVertexAttrib.alpha / 255.0f );
+		skipnanogl = ( buffer != 0 ) || vboarray;
+		boundArrayBuffer = buffer;
+		glEsImpl->glBindBuffer( target, buffer );
+		if( previous && !buffer )
 		{
-			glEsImpl->glEnableClientState( GL_COLOR_ARRAY );
-			tmuState0.color_array.changed = 1;
-			tmuState1.color_array.changed = 1;
-			tmuState0.texture_coord_array.changed = 1;
-			tmuState1.texture_coord_array.changed = 1;
-			arraysValid = 0;
-			ResetNanoState();
+			arraysValid = GL_FALSE;
+			if( !skipnanogl )
+			{
+				glEsImpl->glEnableClientState( GL_COLOR_ARRAY );
+				tmuState0.color_array.changed = GL_TRUE;
+				tmuState1.color_array.changed = GL_TRUE;
+				tmuState0.texture_coord_array.changed = GL_TRUE;
+				tmuState1.texture_coord_array.changed = GL_TRUE;
+				ResetNanoState();
+			}
 		}
 	}
-	sindex = index;
+	else
+	{
+		boundElementArrayBuffer = buffer;
+		glEsImpl->glBindBuffer( target, buffer );
+	}
+	if( buffer && !FindBufferShadow( buffer, GL_TRUE ))
+		SetWrapperError( GL_OUT_OF_MEMORY );
 }
 
-void GL_MANGLE( glGenBuffersARB )( GLuint count, GLuint *indexes )
+void GL_MANGLE( glGenBuffersARB )( GLsizei count, GLuint *buffers )
 {
-	glEsImpl->glGenBuffers( count, indexes );
+	if( count < 0 || ( count && !buffers ))
+	{
+		SetWrapperError( count < 0 ? GL_INVALID_VALUE : GL_INVALID_OPERATION );
+		return;
+	}
+	glEsImpl->glGenBuffers( count, buffers );
+	for( GLsizei i = 0; i < count; ++i )
+		if( buffers[i] && !FindBufferShadow( buffers[i], GL_TRUE ))
+			SetWrapperError( GL_OUT_OF_MEMORY );
 }
 
-void GL_MANGLE( glDeleteBuffersARB )( GLuint count, GLuint *indexes )
+void GL_MANGLE( glDeleteBuffersARB )( GLsizei count, const GLuint *buffers )
 {
-	glEsImpl->glDeleteBuffers( count, indexes );
+	if( count < 0 || ( count && !buffers ))
+	{
+		SetWrapperError( count < 0 ? GL_INVALID_VALUE : GL_INVALID_OPERATION );
+		return;
+	}
+	glEsImpl->glDeleteBuffers( count, buffers );
+	for( GLsizei i = 0; i < count; ++i )
+		DeleteBufferShadow( buffers[i] );
+	if( !boundArrayBuffer && skipnanogl && !vboarray )
+	{
+		skipnanogl = GL_FALSE;
+		arraysValid = GL_FALSE;
+		ResetNanoState();
+	}
 }
 
-void GL_MANGLE( glBufferDataARB )( GLuint target, GLuint size, void *buffer, GLuint type )
+void GL_MANGLE( glBufferDataARB )( GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage )
 {
-	if( type == 0x88E0 )
-		type = 0x88E8;
-	glEsImpl->glBufferData( target, size, buffer, type );
+	GLuint id = BoundBufferForTarget( target );
+	if( !id )
+	{
+		SetWrapperError( target != GL_ARRAY_BUFFER_ARB && target != GL_ELEMENT_ARRAY_BUFFER_ARB ? GL_INVALID_ENUM : GL_INVALID_OPERATION );
+		return;
+	}
+	if( size < 0 || size > INT_MAX )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	struct BufferShadow *entry = FindBufferShadow( id, GL_TRUE );
+	if( !entry )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	if( entry->mapped )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	GLubyte *copy = size ? (GLubyte *)malloc((size_t)size) : NULL;
+	if( size && !copy )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return;
+	}
+	if( size )
+	{
+		if( data ) memcpy( copy, data, (size_t)size );
+		else memset( copy, 0, (size_t)size );
+	}
+	if( usage == GL_STREAM_DRAW_ARB )
+		usage = GL_DYNAMIC_DRAW_ARB;
+	glEsImpl->glBufferData( target, (GLint)size, data, usage );
+	free( entry->data );
+	entry->data = copy;
+	entry->size = (size_t)size;
+	entry->usage = usage;
+	entry->mapped = GL_FALSE;
 }
 
-void GL_MANGLE( glBufferSubDataARB )( GLuint target, GLsizei offset, GLsizei size, void *buffer )
+void GL_MANGLE( glBufferSubDataARB )( GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data )
 {
-	glEsImpl->glBufferSubData( target, offset, size, buffer );
+	GLuint id = BoundBufferForTarget( target );
+	struct BufferShadow *entry = FindBufferShadow( id, GL_FALSE );
+	if( !id || !entry )
+	{
+		SetWrapperError( target != GL_ARRAY_BUFFER_ARB && target != GL_ELEMENT_ARRAY_BUFFER_ARB ? GL_INVALID_ENUM : GL_INVALID_OPERATION );
+		return;
+	}
+	if( entry->mapped )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+	if( offset < 0 || size < 0 || (uintmax_t)offset + (uintmax_t)size > entry->size || ( size && !data ))
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return;
+	}
+	glEsImpl->glBufferSubData( target, (GLint)offset, (GLint)size, data );
+	if( size )
+		memcpy( entry->data + (size_t)offset, data, (size_t)size );
+}
+
+GLvoid *GL_MANGLE( glMapBufferARB )( GLenum target, GLenum access )
+{
+	if( target != GL_ARRAY_BUFFER_ARB && target != GL_ELEMENT_ARRAY_BUFFER_ARB )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return NULL;
+	}
+	if( access != GL_READ_ONLY && access != GL_WRITE_ONLY && access != GL_READ_WRITE )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return NULL;
+	}
+	struct BufferShadow *entry = FindBufferShadow( BoundBufferForTarget( target ), GL_FALSE );
+	if( !entry || entry->mapped )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return NULL;
+	}
+	FlushOnStateChange();
+	entry->mapped = GL_TRUE;
+	return entry->data;
+}
+
+GLboolean GL_MANGLE( glUnmapBufferARB )( GLenum target )
+{
+	if( target != GL_ARRAY_BUFFER_ARB && target != GL_ELEMENT_ARRAY_BUFFER_ARB )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return GL_FALSE;
+	}
+	struct BufferShadow *entry = FindBufferShadow( BoundBufferForTarget( target ), GL_FALSE );
+	if( !entry || !entry->mapped )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return GL_FALSE;
+	}
+	glEsImpl->glBufferData( target, (GLint)entry->size, entry->data, entry->usage );
+	entry->mapped = GL_FALSE;
+	return GL_TRUE;
 }
 
 GLboolean GL_MANGLE( glIsEnabled )( GLenum cap )
 {
+	int coord = TexGenCoordIndex( cap );
+	if( coord >= 0 )
+	{
+		int unit = ActiveTextureUnitIndex();
+		if( unit < 0 )
+		{
+			SetWrapperError( GL_INVALID_ENUM );
+			return GL_FALSE;
+		}
+		return texgenStates[unit][coord].enabled;
+	}
 	return glEsImpl->glIsEnabled( cap );
 }
 
@@ -3303,6 +4457,9 @@ NANOGL_ALIAS( glColorMask );
 NANOGL_ALIAS( glColorMaterial );
 NANOGL_ALIAS( glColorPointer );
 NANOGL_ALIAS( glCompressedTexImage2D );
+NANOGL_ALIAS( glCompressedTexImage2DARB );
+NANOGL_ALIAS( glCompressedTexSubImage2D );
+NANOGL_ALIAS( glCompressedTexSubImage2DARB );
 NANOGL_ALIAS( glCopyTexImage2D );
 NANOGL_ALIAS( glCopyTexSubImage2D );
 NANOGL_ALIAS( glCullFace );
@@ -3311,6 +4468,7 @@ NANOGL_ALIAS( glDebugMessageControlARB );
 NANOGL_ALIAS( glDebugMessageInsertARB );
 NANOGL_ALIAS( glDeleteBuffersARB );
 NANOGL_ALIAS( glDeleteFramebuffers );
+NANOGL_ALIAS( glDeleteLists );
 NANOGL_ALIAS( glDeleteRenderbuffers );
 NANOGL_ALIAS( glDeleteTextures );
 NANOGL_ALIAS( glDepthFunc );
@@ -3324,6 +4482,7 @@ NANOGL_ALIAS( glDrawElements );
 NANOGL_ALIAS( glEnable );
 NANOGL_ALIAS( glEnableClientState );
 NANOGL_ALIAS( glEnd );
+NANOGL_ALIAS( glEndList );
 NANOGL_ALIAS( glFinish );
 NANOGL_ALIAS( glFlush );
 NANOGL_ALIAS( glFogf );
@@ -3335,38 +4494,49 @@ NANOGL_ALIAS( glFrontFace );
 NANOGL_ALIAS( glFrustum );
 NANOGL_ALIAS( glGenBuffersARB );
 NANOGL_ALIAS( glGenFramebuffers );
+NANOGL_ALIAS( glGenLists );
 NANOGL_ALIAS( glGenRenderbuffers );
 NANOGL_ALIAS( glGenTextures );
+NANOGL_ALIAS( glGetBooleanv );
+NANOGL_ALIAS( glGetCompressedTexImageARB );
 NANOGL_ALIAS( glGetDebugMessageLogARB );
+NANOGL_ALIAS( glGetDoublev );
 NANOGL_ALIAS( glGetError );
 NANOGL_ALIAS( glGetFloatv );
 NANOGL_ALIAS( glGetIntegerv );
 NANOGL_ALIAS( glGetString );
 NANOGL_ALIAS( glGetTexImage );
+NANOGL_ALIAS( glGetTexLevelParameteriv );
 NANOGL_ALIAS( glGetTexParameteriv );
 NANOGL_ALIAS( glHint );
 NANOGL_ALIAS( glIsEnabled );
+NANOGL_ALIAS( glIsList );
 NANOGL_ALIAS( glIsRenderbuffer );
 NANOGL_ALIAS( glIsTexture );
 NANOGL_ALIAS( glLightModelf );
 NANOGL_ALIAS( glLightModelfv );
+NANOGL_ALIAS( glLightModeli );
 NANOGL_ALIAS( glLightf );
 NANOGL_ALIAS( glLightfv );
 NANOGL_ALIAS( glLineWidth );
 NANOGL_ALIAS( glLoadIdentity );
 NANOGL_ALIAS( glLoadMatrixf );
+NANOGL_ALIAS( glMapBufferARB );
 NANOGL_ALIAS( glMaterialf );
 NANOGL_ALIAS( glMaterialfv );
 NANOGL_ALIAS( glMatrixMode );
+NANOGL_ALIAS( glMultMatrix );
 NANOGL_ALIAS( glMultMatrixf );
 NANOGL_ALIAS( glMultiTexCoord1f );
 NANOGL_ALIAS( glMultiTexCoord1fARB );
 NANOGL_ALIAS( glMultiTexCoord2f );
 NANOGL_ALIAS( glMultiTexCoord2fARB );
+NANOGL_ALIAS( glMultiTexCoord2fvARB );
 NANOGL_ALIAS( glMultiTexCoord3f );
 NANOGL_ALIAS( glMultiTexCoord3fARB );
 NANOGL_ALIAS( glMultiTexCoord4f );
 NANOGL_ALIAS( glMultiTexCoord4fARB );
+NANOGL_ALIAS( glNewList );
 NANOGL_ALIAS( glNormal3f );
 NANOGL_ALIAS( glNormal3fv );
 NANOGL_ALIAS( glNormalPointer );
@@ -3380,6 +4550,7 @@ NANOGL_ALIAS( glPushMatrix );
 NANOGL_ALIAS( glReadBuffer );
 NANOGL_ALIAS( glReadPixels );
 NANOGL_ALIAS( glRenderbufferStorage );
+NANOGL_ALIAS( glRotate );
 NANOGL_ALIAS( glRotatef );
 NANOGL_ALIAS( glScalef );
 NANOGL_ALIAS( glScissor );
@@ -3399,6 +4570,7 @@ NANOGL_ALIAS( glTexCoordPointer );
 NANOGL_ALIAS( glTexEnvf );
 NANOGL_ALIAS( glTexEnvfv );
 NANOGL_ALIAS( glTexEnvi );
+NANOGL_ALIAS( glTexGenf );
 NANOGL_ALIAS( glTexGenfv );
 NANOGL_ALIAS( glTexGeni );
 NANOGL_ALIAS( glTexImage1D );
@@ -3411,8 +4583,11 @@ NANOGL_ALIAS( glTexParameterx );
 NANOGL_ALIAS( glTexSubImage1D );
 NANOGL_ALIAS( glTexSubImage2D );
 NANOGL_ALIAS( glTexSubImage3D );
+NANOGL_ALIAS( glTranslate );
 NANOGL_ALIAS( glTranslatef );
+NANOGL_ALIAS( glUnmapBufferARB );
 NANOGL_ALIAS( glVertex2f );
+NANOGL_ALIAS( glVertex2i );
 NANOGL_ALIAS( glVertex3f );
 NANOGL_ALIAS( glVertex3fv );
 NANOGL_ALIAS( glVertex4f );
