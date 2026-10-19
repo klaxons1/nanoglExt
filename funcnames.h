@@ -15,7 +15,6 @@
     "glColorMask",
     "glColorPointer",
     "glCompressedTexImage2D",
-    "glGetTexImage",
     "glCompressedTexSubImage2D",
     "glCopyTexImage2D",
     "glCopyTexSubImage2D",
@@ -149,8 +148,6 @@
     "glOrtho",
     "glDepthRange",
 #endif
-// Rikku2000: Light
-	"glColorMaterial",
 
 // fbo
 	"glGenFramebuffersOES",

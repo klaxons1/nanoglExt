@@ -234,6 +234,13 @@ static GLushort *ptrIndexArray = NULL;
 static GLboolean arraysValid = GL_FALSE;
 
 static GLboolean skipnanogl;
+static GLenum nanoWrapperError = GL_NO_ERROR;
+
+static void SetWrapperError( GLenum error )
+{
+	if( nanoWrapperError == GL_NO_ERROR )
+		nanoWrapperError = error;
+}
 
 void InitGLStructs( void )
 {
@@ -259,6 +266,8 @@ void InitGLStructs( void )
 	vertexMark = 0;
 	indexbase = 0;
 	arraysValid = GL_FALSE;
+	skipnanogl = GL_FALSE;
+	nanoWrapperError = GL_NO_ERROR;
 }
 
 static void ResetNanoState( void )
@@ -1310,9 +1319,21 @@ void GL_MANGLE( glMaterialfv )( GLenum face, GLenum pname, const GLfloat *params
 
 void GL_MANGLE( glColorMaterial )( GLenum face, GLenum mode )
 {
-	FlushOnStateChange();
-
-	glEsImpl->glColorMaterial( face, mode );
+	// GLES 1.1 fixes color material tracking to front-and-back ambient+diffuse.
+	// Enabling GL_COLOR_MATERIAL already provides this behavior; there is no
+	// corresponding GLES glColorMaterial entry point.
+	if( face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+	if( mode != GL_AMBIENT && mode != GL_DIFFUSE && mode != GL_SPECULAR && mode != GL_EMISSION && mode != GL_AMBIENT_AND_DIFFUSE )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+	if( face != GL_FRONT_AND_BACK || mode != GL_AMBIENT_AND_DIFFUSE )
+		SetWrapperError( GL_INVALID_OPERATION );
 }
 
 void GL_MANGLE( glMatrixMode )( GLenum mode )
@@ -1806,8 +1827,13 @@ void GL_MANGLE( glClearColor )( GLclampf red, GLclampf green, GLclampf blue, GLc
 
 GLenum GL_MANGLE( glGetError )( void )
 {
-	// FlushOnStateChange();
-	return GL_NO_ERROR; // glEsImpl->glGetError();
+	if( nanoWrapperError != GL_NO_ERROR )
+	{
+		GLenum error = nanoWrapperError;
+		nanoWrapperError = GL_NO_ERROR;
+		return error;
+	}
+	return glEsImpl->glGetError();
 }
 
 void GL_MANGLE( glActiveTexture )( GLenum texture )
@@ -2338,8 +2364,15 @@ void GL_MANGLE( glCompressedTexImage2D )( GLenum target, GLint level, GLenum int
 
 void GL_MANGLE( glGetTexImage )( GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels )
 {
-	FlushOnStateChange();
-	glEsImpl->glGetTexImage( target, level, format, type, pixels );
+	// glGetTexImage is a desktop OpenGL command, not part of GLES 1.1.
+	// Keep the compatibility symbol for linkers, but fail explicitly rather
+	// than attempting to resolve a non-existent GLES entry point.
+	(void)target;
+	(void)level;
+	(void)format;
+	(void)type;
+	(void)pixels;
+	SetWrapperError( GL_INVALID_OPERATION );
 }
 
 void GL_MANGLE( glPixelStorei )( GLenum pname, GLint param )

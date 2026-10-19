@@ -15,6 +15,7 @@ static struct
 } draws[MAX_DRAWS];
 
 static int numdraws;
+static int nonGlesProcLookups;
 
 static void APIENTRY StubNop( void )
 {
@@ -40,6 +41,8 @@ static void APIENTRY StubDrawElements( GLenum mode, GLsizei count, GLenum type, 
 
 void *GL_GetProcAddress( const char *name )
 {
+	if( !strcmp( name, "glGetTexImage" ) || !strcmp( name, "glColorMaterial" ))
+		nonGlesProcLookups++;
 	if( !strcmp( name, "glDrawElements" ))
 		return (void *)StubDrawElements;
 	if( !strcmp( name, "glGetString" ))
@@ -71,6 +74,18 @@ static int Test_ExtensionsString( void )
 	if( !strstr( ext, "GL_IMG_ray_tracing" ) || !strstr( ext, "GL_ARB_multitexture" ))
 		return 1;
 	return 0;
+}
+
+static int Test_NoDesktopOnlyGlesLookups( void )
+{
+	return nonGlesProcLookups != 0;
+}
+
+static int Test_GetTexImageRejectedByGles( void )
+{
+	GLubyte pixels[4] = { 0, 0, 0, 0 };
+	pglGetTexImage( GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels );
+	return pglGetError() != GL_INVALID_OPERATION;
 }
 
 static int Test_TwoQuads( void )
@@ -228,6 +243,8 @@ int main( void )
 	}
 
 	RUN_TEST( Test_ExtensionsString );
+	RUN_TEST( Test_NoDesktopOnlyGlesLookups );
+	RUN_TEST( Test_GetTexImageRejectedByGles );
 	RUN_TEST( Test_TwoQuads );
 	RUN_TEST( Test_Lines );
 	RUN_TEST( Test_LineStrip );
