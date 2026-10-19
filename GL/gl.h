@@ -55,6 +55,7 @@ typedef int GLclampx;
 #define GL_3_BYTES        0x1408
 #define GL_4_BYTES        0x1409
 #define GL_DOUBLE         0x140A
+#define GL_FIXED          0x140C
 
 /* StringName */
 #define GL_VENDOR     0x1F00
@@ -593,8 +594,16 @@ void   GL_MANGLE( glEnd )( void );
 void   GL_MANGLE( glEnable )( GLenum cap );
 void   GL_MANGLE( glDisable )( GLenum cap );
 void   GL_MANGLE( glVertex2f )( GLfloat x, GLfloat y );
+void   GL_MANGLE( glVertex4f )( GLfloat x, GLfloat y, GLfloat z, GLfloat w );
+void   GL_MANGLE( glVertex4fv )( const GLfloat *v );
 void   GL_MANGLE( glColor3f )( GLfloat red, GLfloat green, GLfloat blue );
+void   GL_MANGLE( glTexCoord1f )( GLfloat s );
 void   GL_MANGLE( glTexCoord2f )( GLfloat s, GLfloat t );
+void   GL_MANGLE( glTexCoord3f )( GLfloat s, GLfloat t, GLfloat r );
+void   GL_MANGLE( glTexCoord4f )( GLfloat s, GLfloat t, GLfloat r, GLfloat q );
+void   GL_MANGLE( glTexCoord1fv )( const GLfloat *v );
+void   GL_MANGLE( glTexCoord3fv )( const GLfloat *v );
+void   GL_MANGLE( glTexCoord4fv )( const GLfloat *v );
 void   GL_MANGLE( glViewport )( GLint x, GLint y, GLsizei width, GLsizei height );
 void   GL_MANGLE( glLoadIdentity )( void );
 void   GL_MANGLE( glColor4f )( GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha );
@@ -696,6 +705,7 @@ void   GL_MANGLE( glColorMaterial )( GLenum face, GLenum mode );
 // nicknekit: for xash3d
 
 void GL_MANGLE( glColor3ub )( GLubyte red, GLubyte green, GLubyte blue );
+void GL_MANGLE( glNormal3f )( GLfloat nx, GLfloat ny, GLfloat nz );
 void GL_MANGLE( glNormal3fv )( const GLfloat *v );
 void GL_MANGLE( glCopyTexImage2D )( GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border );
 void GL_MANGLE( glTexImage1D )( GLenum target, GLint level, GLint internalformat, GLsizei width, GLint border, GLenum format, GLenum type, const GLvoid *pixels );
@@ -724,7 +734,7 @@ void      GL_MANGLE( glDeleteFramebuffers )( GLsizei n, const GLuint *framebuffe
 void      GL_MANGLE( glGenFramebuffers )( GLsizei n, GLuint *framebuffers );
 GLenum    GL_MANGLE( glCheckFramebufferStatus )( GLenum target );
 
-// GLboolean GL_MANGLE(glIsRenderbuffer)(GLuint renderbuffer);
+GLboolean  GL_MANGLE( glIsRenderbuffer )( GLuint renderbuffer );
 void      GL_MANGLE( glBindRenderbuffer )( GLenum target, GLuint renderbuffer );
 void      GL_MANGLE( glDeleteRenderbuffers )( GLsizei n, const GLuint *renderbuffers );
 void      GL_MANGLE( glGenRenderbuffers )( GLsizei n, GLuint *renderbuffers );
@@ -734,10 +744,14 @@ void      GL_MANGLE( glFramebufferRenderbuffer )( GLenum target, GLenum attachme
 
 void      GL_MANGLE( glNormalPointer )( GLenum type, GLsizei stride, const void *ptr );
 
-void      GL_MANGLE( glMultiTexCoord3f )( GLenum, GLfloat, GLfloat, GLfloat );
-void      GL_MANGLE( glMultiTexCoord3fARB )( GLenum, GLfloat, GLfloat, GLfloat );
-void      GL_MANGLE( glMultiTexCoord2f )( GLenum, GLfloat, GLfloat );
-void      GL_MANGLE( glMultiTexCoord2fARB )( GLenum, GLfloat, GLfloat );
+void      GL_MANGLE( glMultiTexCoord1f )( GLenum target, GLfloat s );
+void      GL_MANGLE( glMultiTexCoord1fARB )( GLenum target, GLfloat s );
+void      GL_MANGLE( glMultiTexCoord2f )( GLenum target, GLfloat s, GLfloat t );
+void      GL_MANGLE( glMultiTexCoord2fARB )( GLenum target, GLfloat s, GLfloat t );
+void      GL_MANGLE( glMultiTexCoord3f )( GLenum target, GLfloat s, GLfloat t, GLfloat r );
+void      GL_MANGLE( glMultiTexCoord3fARB )( GLenum target, GLfloat s, GLfloat t, GLfloat r );
+void      GL_MANGLE( glMultiTexCoord4f )( GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q );
+void      GL_MANGLE( glMultiTexCoord4fARB )( GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q );
 
 void      GL_MANGLE( glDrawArrays )( GLenum mode, GLint first, GLsizei count );
 

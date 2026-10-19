@@ -103,12 +103,28 @@ static void APIENTRY gl_unimplemented( GLenum none )
 #else // make glGetString not crash
 static const char *APIENTRY gl_unimplemented( GLenum none )
 {
+	(void)none;
 #ifndef USE_CORE_PROFILE
 	LOGE( "Called unimplemented OpenGL ES API\n" );
 #endif
 	return "";
 }
 #endif
+
+static int IsOptionalFramebufferProc( const char *name )
+{
+	return !strcmp( name, "glGenFramebuffersOES" ) ||
+		!strcmp( name, "glGenRenderbuffersOES" ) ||
+		!strcmp( name, "glRenderbufferStorageOES" ) ||
+		!strcmp( name, "glBindFramebufferOES" ) ||
+		!strcmp( name, "glBindRenderbufferOES" ) ||
+		!strcmp( name, "glFramebufferTexture2DOES" ) ||
+		!strcmp( name, "glDeleteRenderbuffersOES" ) ||
+		!strcmp( name, "glDeleteFramebuffersOES" ) ||
+		!strcmp( name, "glFramebufferRenderbufferOES" ) ||
+		!strcmp( name, "glIsRenderbufferOES" ) ||
+		!strcmp( name, "glCheckFramebufferStatusOES" );
+}
 
 int nanoGL_Init( void )
 {
@@ -149,7 +165,7 @@ int nanoGL_Init( void )
 		if( f == NULL )
 		{
 			LOGW( "<%s> not found.", *api );
-			f = (void *)gl_unimplemented;
+			f = IsOptionalFramebufferProc( *api ) ? NULL : (void *)gl_unimplemented;
 		}
 		else
 		{

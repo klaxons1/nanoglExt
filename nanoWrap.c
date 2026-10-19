@@ -23,6 +23,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,6 +206,10 @@ typedef struct VertexAttrib
 	float x;
 	float y;
 	float z;
+	float w;
+	float nx;
+	float ny;
+	float nz;
 	unsigned char red;
 	unsigned char green;
 	unsigned char blue;
@@ -211,8 +217,12 @@ typedef struct VertexAttrib
 
 	float s;
 	float t;
+	float r;
+	float q;
 	float s_multi;
 	float t_multi;
+	float r_multi;
+	float q_multi;
 } VertexAttrib;
 
 static VertexAttrib vertexattribs[60000];
@@ -228,7 +238,7 @@ static VertexAttrib *ptrVertexAttribArray = NULL;
 static VertexAttrib *ptrVertexAttribArrayMark = NULL;
 
 static VertexAttrib currentVertexAttrib;
-static VertexAttrib currentVertexAttribInit = { 0.0f, 0.0f, 0.0f, 255, 255, 255, 255, 0.0f, 0.0f, 0.0f, 0.0f };
+static VertexAttrib currentVertexAttribInit = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 255, 255, 255, 255, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f };
 static GLushort *ptrIndexArray = NULL;
 
 static GLboolean arraysValid = GL_FALSE;
@@ -361,16 +371,18 @@ static void FlushOnStateChange( void )
 	if( !arraysValid )
 	{
 		glEsImpl->glClientActiveTexture( GL_TEXTURE0 );
-		glEsImpl->glVertexPointer( 3, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].x );
+		glEsImpl->glVertexPointer( 4, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].x );
+		glEsImpl->glNormalPointer( GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].nx );
 		glEsImpl->glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( VertexAttrib ), &vertexattribs[0].red );
-		glEsImpl->glTexCoordPointer( 2, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].s );
+		glEsImpl->glTexCoordPointer( 4, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].s );
 		glEsImpl->glEnableClientState( GL_VERTEX_ARRAY );
+		glEsImpl->glEnableClientState( GL_NORMAL_ARRAY );
 		glEsImpl->glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 		glEsImpl->glEnableClientState( GL_COLOR_ARRAY );
 		glEsImpl->glClientActiveTexture( GL_TEXTURE1 );
 		if( multitex )
 		{
-			glEsImpl->glTexCoordPointer( 2, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].s_multi );
+			glEsImpl->glTexCoordPointer( 4, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].s_multi );
 			glEsImpl->glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 		}
 		else
@@ -386,7 +398,7 @@ static void FlushOnStateChange( void )
 		glEsImpl->glClientActiveTexture( GL_TEXTURE1 );
 		if( multitex )
 		{
-			glEsImpl->glTexCoordPointer( 2, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].s_multi );
+			glEsImpl->glTexCoordPointer( 4, GL_FLOAT, sizeof( VertexAttrib ), &vertexattribs[0].s_multi );
 			glEsImpl->glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 		}
 		else
@@ -477,6 +489,29 @@ void GL_MANGLE( glEnd )( void )
 			indexCount += 4;
 			vertexCount += 2;
 		}
+	}
+	break;
+	case GL_QUAD_STRIP:
+	{
+		if(( vertexCount - vertexMark ) & 1 )
+		{
+			vertexCount--;
+			ptrVertexAttribArray--;
+		}
+		int quadverts = vertexCount - vertexMark;
+		int qcount = quadverts / 2 - 1;
+		for( int count = 0; count < qcount; ++count )
+		{
+			GLuint base = indexCount + count * 2;
+			*ptrIndexArray++ = (GLushort)base;
+			*ptrIndexArray++ = (GLushort)( base + 1 );
+			*ptrIndexArray++ = (GLushort)( base + 3 );
+			*ptrIndexArray++ = (GLushort)base;
+			*ptrIndexArray++ = (GLushort)( base + 3 );
+			*ptrIndexArray++ = (GLushort)( base + 2 );
+		}
+		indexCount += quadverts;
+		vertexCount += qcount * 2;
 	}
 	break;
 	case GL_TRIANGLES:
@@ -587,7 +622,7 @@ void GL_MANGLE( glEnd )( void )
 		ptrVertexAttribArray = ptrVertexAttribArrayMark;
 		break;
 	}
-	if( ptrVertexAttribArray - vertexattribs > ( sizeof( vertexattribs ) / sizeof( vertexattribs[0] )) - 4096 || ptrIndexArray - indexArray > ( sizeof( indexArray ) / sizeof( indexArray[0] )) - 4096 )
+	if((size_t)( ptrVertexAttribArray - vertexattribs ) > ( sizeof( vertexattribs ) / sizeof( vertexattribs[0] )) - 4096 || (size_t)( ptrIndexArray - indexArray ) > ( sizeof( indexArray ) / sizeof( indexArray[0] )) - 4096 )
 		FlushOnStateChange();
 }
 
@@ -1223,15 +1258,69 @@ void GL_MANGLE( glColor3f )( GLfloat red, GLfloat green, GLfloat blue )
 	currentVertexAttrib.alpha = 255;
 }
 
-void GL_MANGLE( glTexCoord2fv )( const GLfloat *v )
+static void SetCurrentTexCoord( GLenum target, const GLfloat *coords, GLint count )
 {
-	memcpy( &currentVertexAttrib.s, v, 2 * sizeof( float ));
+	GLfloat *destination;
+	const GLfloat defaults[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+	if( target == GL_TEXTURE0 )
+		destination = &currentVertexAttrib.s;
+	else if( target == GL_TEXTURE1 )
+		destination = &currentVertexAttrib.s_multi;
+	else
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+
+	memcpy( destination, defaults, sizeof( defaults ));
+	memcpy( destination, coords, (size_t)count * sizeof( GLfloat ));
+
+	if( skipnanogl )
+		glEsImpl->glMultiTexCoord4f( target, destination[0], destination[1], destination[2], destination[3] );
+}
+
+void GL_MANGLE( glTexCoord1f )( GLfloat s )
+{
+	SetCurrentTexCoord( activetmu, &s, 1 );
 }
 
 void GL_MANGLE( glTexCoord2f )( GLfloat s, GLfloat t )
 {
-	currentVertexAttrib.s = s;
-	currentVertexAttrib.t = t;
+	const GLfloat coords[2] = { s, t };
+	SetCurrentTexCoord( activetmu, coords, 2 );
+}
+
+void GL_MANGLE( glTexCoord3f )( GLfloat s, GLfloat t, GLfloat r )
+{
+	const GLfloat coords[3] = { s, t, r };
+	SetCurrentTexCoord( activetmu, coords, 3 );
+}
+
+void GL_MANGLE( glTexCoord4f )( GLfloat s, GLfloat t, GLfloat r, GLfloat q )
+{
+	const GLfloat coords[4] = { s, t, r, q };
+	SetCurrentTexCoord( activetmu, coords, 4 );
+}
+
+void GL_MANGLE( glTexCoord1fv )( const GLfloat *v )
+{
+	SetCurrentTexCoord( activetmu, v, 1 );
+}
+
+void GL_MANGLE( glTexCoord2fv )( const GLfloat *v )
+{
+	SetCurrentTexCoord( activetmu, v, 2 );
+}
+
+void GL_MANGLE( glTexCoord3fv )( const GLfloat *v )
+{
+	SetCurrentTexCoord( activetmu, v, 3 );
+}
+
+void GL_MANGLE( glTexCoord4fv )( const GLfloat *v )
+{
+	SetCurrentTexCoord( activetmu, v, 4 );
 }
 
 void GL_MANGLE( glViewport )( GLint x, GLint y, GLsizei width, GLsizei height )
@@ -1351,7 +1440,8 @@ void GL_MANGLE( glTexParameterf )( GLenum target, GLenum pname, GLfloat param )
 {
 	if( pname == GL_TEXTURE_BORDER_COLOR )
 	{
-		return; // not supported by opengl es
+		SetWrapperError( GL_INVALID_ENUM );
+		return; // desktop OpenGL border color is not supported by GLES
 	}
 	if(( pname == GL_TEXTURE_WRAP_S || pname == GL_TEXTURE_WRAP_T ) && param == GL_CLAMP )
 	{
@@ -1400,6 +1490,9 @@ void GL_MANGLE( glTexImage2D )( GLenum target, GLint level, GLint internalformat
 
 void GL_MANGLE( glDrawBuffer )( GLenum mode )
 {
+	// GLES has one draw buffer; FRONT/BACK select the same platform target.
+	if( mode != GL_FRONT && mode != GL_BACK )
+		SetWrapperError( GL_INVALID_ENUM );
 }
 
 void GL_MANGLE( glTranslatef )( GLfloat x, GLfloat y, GLfloat z )
@@ -1503,7 +1596,7 @@ static void CheckQuadsOverflow( void )
 		size_t indices = ( ptrIndexArray - indexArray ) + ( ptrVertexAttribArray - ptrVertexAttribArrayMark ) / 4 * 6;
 
 		// 4096 just gives a small headroom in case of Begin/End blocks larger than usual...
-		if( ptrVertexAttribArray - vertexattribs > ( sizeof( vertexattribs ) / sizeof( vertexattribs[0] )) - 4096 || indices > ( sizeof( indexArray ) / sizeof( indexArray[0] )) - 4096 )
+		if((size_t)( ptrVertexAttribArray - vertexattribs ) > ( sizeof( vertexattribs ) / sizeof( vertexattribs[0] )) - 4096 || indices > ( sizeof( indexArray ) / sizeof( indexArray[0] )) - 4096 )
 		{
 			GL_MANGLE_NAME( glEnd )();
 			FlushOnStateChange();
@@ -1512,7 +1605,7 @@ static void CheckQuadsOverflow( void )
 	}
 }
 
-void GL_MANGLE( glVertex3f )( GLfloat x, GLfloat y, GLfloat z )
+static void StoreVertex( GLfloat x, GLfloat y, GLfloat z, GLfloat w )
 {
 	CheckQuadsOverflow();
 
@@ -1520,7 +1613,23 @@ void GL_MANGLE( glVertex3f )( GLfloat x, GLfloat y, GLfloat z )
 	*vert++ = x;
 	*vert++ = y;
 	*vert++ = z;
-	memcpy( vert, &currentVertexAttrib.red, 5 * sizeof( GLfloat ));
+	*vert++ = w;
+	memcpy( vert, &currentVertexAttrib.nx, sizeof( VertexAttrib ) - 4 * sizeof( GLfloat ));
+}
+
+void GL_MANGLE( glVertex3f )( GLfloat x, GLfloat y, GLfloat z )
+{
+	StoreVertex( x, y, z, 1.0f );
+}
+
+void GL_MANGLE( glVertex4f )( GLfloat x, GLfloat y, GLfloat z, GLfloat w )
+{
+	StoreVertex( x, y, z, w );
+}
+
+void GL_MANGLE( glVertex4fv )( const GLfloat *v )
+{
+	StoreVertex( v[0], v[1], v[2], v[3] );
 }
 
 void GL_MANGLE( glColor4fv )( const GLfloat *v )
@@ -1586,10 +1695,18 @@ void GL_MANGLE( glColor3ub )( GLubyte red, GLubyte green, GLubyte blue )
 		glEsImpl->glColor4f( currentVertexAttrib.red / 255.0f, currentVertexAttrib.green / 255.0f, currentVertexAttrib.blue / 255.0f, currentVertexAttrib.alpha / 255.0f );
 }
 
+void GL_MANGLE( glNormal3f )( GLfloat nx, GLfloat ny, GLfloat nz )
+{
+	currentVertexAttrib.nx = nx;
+	currentVertexAttrib.ny = ny;
+	currentVertexAttrib.nz = nz;
+	if( skipnanogl )
+		glEsImpl->glNormal3f( nx, ny, nz );
+}
+
 void GL_MANGLE( glNormal3fv )( const GLfloat *v )
 {
-	FlushOnStateChange();
-	glEsImpl->glNormal3f( v[0], v[1], v[2] );
+	GL_MANGLE_NAME( glNormal3f )( v[0], v[1], v[2] );
 }
 
 void GL_MANGLE( glCopyTexImage2D )( GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border )
@@ -1600,11 +1717,18 @@ void GL_MANGLE( glCopyTexImage2D )( GLenum target, GLint level, GLenum internalf
 
 void GL_MANGLE( glTexImage1D )( GLenum target, GLint level, GLint internalformat, GLsizei width, GLint border, GLenum format, GLenum type, const GLvoid *pixels )
 {
+	(void)target;
 	GL_MANGLE_NAME( glTexImage2D )( GL_TEXTURE_2D, level, internalformat, width, 1, border, format, type, pixels );
 }
 
 void GL_MANGLE( glTexImage3D )( GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const GLvoid *pixels )
 {
+	(void)target;
+	if( depth != 1 )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
 	GL_MANGLE_NAME( glTexImage2D )( GL_TEXTURE_2D, level, internalformat, width, height, border, format, type, pixels );
 }
 
@@ -1620,6 +1744,11 @@ void GL_MANGLE( glTexSubImage3D )( GLenum target, GLint level,
 	GLenum format,
 	GLenum type, const GLvoid *pixels )
 {
+	if( zoffset != 0 || depth != 1 )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
 	GL_MANGLE_NAME( glTexSubImage2D )( target, level, xoffset, yoffset, width, height, format, type, pixels );
 }
 
@@ -1633,14 +1762,18 @@ GLboolean GL_MANGLE( glIsTexture )( GLuint texture )
 
 void GL_MANGLE( glTexGeni )( GLenum coord, GLenum pname, GLint param )
 {
-	FlushOnStateChange();
-	// glEsImpl->glTexGeniOES( coord, pname, param );
+	(void)coord;
+	(void)pname;
+	(void)param;
+	SetWrapperError( GL_INVALID_OPERATION );
 }
 
 void GL_MANGLE( glTexGenfv )( GLenum coord, GLenum pname, const GLfloat *params )
 {
-	FlushOnStateChange();
-	// glEsImpl->glTexGenfvOES( coord, pname, params );
+	(void)coord;
+	(void)pname;
+	(void)params;
+	SetWrapperError( GL_INVALID_OPERATION );
 }
 
 // -- --//
@@ -1722,11 +1855,7 @@ void GL_MANGLE( glTexEnvf )( GLenum target, GLenum pname, GLfloat param )
 
 void GL_MANGLE( glVertex3fv )( const GLfloat *v )
 {
-	CheckQuadsOverflow();
-
-	GLfloat *vert = (GLfloat *)ptrVertexAttribArray++;
-	memcpy( vert, v, 3 * sizeof( GLfloat ));
-	memcpy( vert + 3, &currentVertexAttrib.red, 5 * sizeof( GLfloat ));
+	StoreVertex( v[0], v[1], v[2], 1.0f );
 }
 
 void GL_MANGLE( glDepthMask )( GLboolean flag )
@@ -1795,8 +1924,9 @@ void GL_MANGLE( glReadPixels )( GLint x, GLint y, GLsizei width, GLsizei height,
 {
 	if( format == GL_DEPTH_COMPONENT )
 	{
-		// OpenglEs 1.1 does not support reading depth buffer without an extension
-		memset( pixels, 0xff, 4 );
+		// GLES 1.1 has no depth readback command. Never write a guessed fixed
+		// byte count into the caller's buffer.
+		SetWrapperError( GL_INVALID_ENUM );
 		return;
 	}
 	FlushOnStateChange();
@@ -1805,6 +1935,9 @@ void GL_MANGLE( glReadPixels )( GLint x, GLint y, GLsizei width, GLsizei height,
 
 void GL_MANGLE( glReadBuffer )( GLenum mode )
 {
+	// GLES has one read buffer; FRONT/BACK select the same platform target.
+	if( mode != GL_FRONT && mode != GL_BACK )
+		SetWrapperError( GL_INVALID_ENUM );
 }
 
 void GL_MANGLE( glLoadMatrixf )( const GLfloat *m )
@@ -1920,6 +2053,18 @@ void GL_MANGLE( glClientActiveTextureARB )( GLenum texture )
 
 void GL_MANGLE( glPolygonMode )( GLenum face, GLenum mode )
 {
+	if( face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+	if( mode != GL_POINT && mode != GL_LINE && mode != GL_FILL )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+	if( mode != GL_FILL )
+		SetWrapperError( GL_INVALID_OPERATION );
 }
 
 void GL_MANGLE( glDeleteTextures )( GLsizei n, const GLuint *textures )
@@ -1965,8 +2110,194 @@ void GL_MANGLE( glPointSize )( GLfloat size )
 	glEsImpl->glPointSize( size );
 }
 
+static size_t ArrayElementTypeSize( GLenum type )
+{
+	switch( type )
+	{
+	case GL_BYTE:
+	case GL_UNSIGNED_BYTE:
+		return 1;
+	case GL_SHORT:
+	case GL_UNSIGNED_SHORT:
+		return 2;
+	case GL_INT:
+	case GL_UNSIGNED_INT:
+	case GL_FLOAT:
+	case GL_FIXED:
+		return 4;
+	case GL_DOUBLE:
+		return 8;
+	default:
+		return 0;
+	}
+}
+
+static const GLubyte *ArrayElementAddress( const struct ptrstate *array, GLint index, GLint components )
+{
+	if( index < 0 || array->stride < 0 || !array->ptr )
+	{
+		SetWrapperError( index < 0 || array->stride < 0 ? GL_INVALID_VALUE : GL_INVALID_OPERATION );
+		return NULL;
+	}
+
+	size_t typeSize = ArrayElementTypeSize( array->type );
+	if( !typeSize )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return NULL;
+	}
+
+	size_t stride = array->stride ? (size_t)array->stride : (size_t)components * typeSize;
+	if( stride && (size_t)index > ( SIZE_MAX - (uintptr_t)array->ptr ) / stride )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return NULL;
+	}
+	return (const GLubyte *)array->ptr + (size_t)index * stride;
+}
+
+static GLfloat ReadArrayComponent( const GLubyte *data, GLenum type, GLboolean normalize )
+{
+	switch( type )
+	{
+	case GL_BYTE:
+	{
+		GLbyte value;
+		memcpy( &value, data, sizeof( value ));
+		return normalize ? ( value == -128 ? -1.0f : value / 127.0f ) : (GLfloat)value;
+	}
+	case GL_UNSIGNED_BYTE:
+	{
+		GLubyte value;
+		memcpy( &value, data, sizeof( value ));
+		return normalize ? value / 255.0f : (GLfloat)value;
+	}
+	case GL_SHORT:
+	{
+		GLshort value;
+		memcpy( &value, data, sizeof( value ));
+		return normalize ? ( value == -32768 ? -1.0f : value / 32767.0f ) : (GLfloat)value;
+	}
+	case GL_UNSIGNED_SHORT:
+	{
+		GLushort value;
+		memcpy( &value, data, sizeof( value ));
+		return normalize ? value / 65535.0f : (GLfloat)value;
+	}
+	case GL_INT:
+	{
+		GLint value;
+		memcpy( &value, data, sizeof( value ));
+		return normalize ? ( value == INT_MIN ? -1.0f : (GLfloat)((double)value / INT_MAX) ) : (GLfloat)value;
+	}
+	case GL_UNSIGNED_INT:
+	{
+		GLuint value;
+		memcpy( &value, data, sizeof( value ));
+		return normalize ? (GLfloat)((double)value / UINT_MAX) : (GLfloat)value;
+	}
+	case GL_FLOAT:
+	{
+		GLfloat value;
+		memcpy( &value, data, sizeof( value ));
+		return value;
+	}
+	case GL_DOUBLE:
+	{
+		GLdouble value;
+		memcpy( &value, data, sizeof( value ));
+		return (GLfloat)value;
+	}
+	case GL_FIXED:
+	{
+		GLfixed value;
+		memcpy( &value, data, sizeof( value ));
+		return value / 65536.0f;
+	}
+	default:
+		return 0.0f;
+	}
+}
+
 void GL_MANGLE( glArrayElement )( GLint i )
 {
+	if( skipnanogl )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return;
+	}
+
+	struct nanotmuState *texState = clientactivetmu == GL_TEXTURE0 ? &tmuState0 :
+		clientactivetmu == GL_TEXTURE1 ? &tmuState1 : NULL;
+	if( !texState )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return;
+	}
+
+	const GLubyte *data;
+	if( tmuState0.color_array.enabled )
+	{
+		struct ptrstate *array = &tmuState0.color_array;
+		GLint components = array->size;
+		if( components < 3 || components > 4 || !( data = ArrayElementAddress( array, i, components )))
+		{
+			if( components < 3 || components > 4 )
+				SetWrapperError( GL_INVALID_VALUE );
+			return;
+		}
+		size_t typeSize = ArrayElementTypeSize( array->type );
+		GLfloat color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		for( GLint c = 0; c < components; ++c )
+			color[c] = ReadArrayComponent( data + (size_t)c * typeSize, array->type, GL_TRUE );
+		GL_MANGLE_NAME( glColor4f )( color[0], color[1], color[2], color[3] );
+	}
+
+	if( tmuState0.normal_array.enabled )
+	{
+		struct ptrstate *array = &tmuState0.normal_array;
+		if( !( data = ArrayElementAddress( array, i, 3 )))
+			return;
+		size_t typeSize = ArrayElementTypeSize( array->type );
+		GL_MANGLE_NAME( glNormal3f )(
+			ReadArrayComponent( data, array->type, GL_FALSE ),
+			ReadArrayComponent( data + typeSize, array->type, GL_FALSE ),
+			ReadArrayComponent( data + 2 * typeSize, array->type, GL_FALSE ));
+	}
+
+	if( texState->texture_coord_array.enabled )
+	{
+		struct ptrstate *array = &texState->texture_coord_array;
+		GLint components = array->size;
+		if( components < 1 || components > 4 || !( data = ArrayElementAddress( array, i, components )))
+		{
+			if( components < 1 || components > 4 )
+				SetWrapperError( GL_INVALID_VALUE );
+			return;
+		}
+		size_t typeSize = ArrayElementTypeSize( array->type );
+		GLfloat coords[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		for( GLint c = 0; c < components; ++c )
+			coords[c] = ReadArrayComponent( data + (size_t)c * typeSize, array->type, GL_FALSE );
+		SetCurrentTexCoord( clientactivetmu, coords, 4 );
+	}
+
+	if( tmuState0.vertex_array.enabled )
+	{
+		struct ptrstate *array = &tmuState0.vertex_array;
+		GLint components = array->size;
+		if( components < 2 || components > 4 || !( data = ArrayElementAddress( array, i, components )))
+		{
+			if( components < 2 || components > 4 )
+				SetWrapperError( GL_INVALID_VALUE );
+			return;
+		}
+		size_t typeSize = ArrayElementTypeSize( array->type );
+		GLfloat vertex[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		for( GLint c = 0; c < components; ++c )
+			vertex[c] = ReadArrayComponent( data + (size_t)c * typeSize, array->type, GL_FALSE );
+		GL_MANGLE_NAME( glVertex4f )( vertex[0], vertex[1], vertex[2], vertex[3] );
+	}
 }
 
 void GL_MANGLE( glLineWidth )( GLfloat width )
@@ -1977,6 +2308,8 @@ void GL_MANGLE( glLineWidth )( GLfloat width )
 
 void GL_MANGLE( glCallList )( GLuint list )
 {
+	(void)list;
+	SetWrapperError( GL_INVALID_OPERATION );
 }
 
 void GL_MANGLE( glColorMask )( GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha )
@@ -2001,11 +2334,115 @@ struct ptrstate vertex_array;
 struct ptrstate color_array;
 struct ptrstate texture_coord_array;
 
+static GLuint ReadDrawIndex( const GLvoid *indices, GLenum type, GLsizei index )
+{
+	switch( type )
+	{
+	case GL_UNSIGNED_BYTE:
+		return ((const GLubyte *)indices)[index];
+	case GL_UNSIGNED_SHORT:
+	{
+		GLushort value;
+		memcpy( &value, (const GLubyte *)indices + (size_t)index * sizeof( value ), sizeof( value ));
+		return value;
+	}
+	case GL_UNSIGNED_INT:
+	{
+		GLuint value;
+		memcpy( &value, (const GLubyte *)indices + (size_t)index * sizeof( value ), sizeof( value ));
+		return value;
+	}
+	default:
+		return UINT_MAX;
+	}
+}
+
+static GLushort *ExpandQuadIndices( GLenum *mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei *expandedCount )
+{
+	if( *mode != GL_QUADS && *mode != GL_QUAD_STRIP )
+		return NULL;
+	if( count < 0 )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return NULL;
+	}
+	if( type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT )
+	{
+		SetWrapperError( GL_INVALID_ENUM );
+		return NULL;
+	}
+	GLsizei quads = *mode == GL_QUADS ? count / 4 : ( count / 2 > 0 ? count / 2 - 1 : 0 );
+	if( quads > INT_MAX / 6 )
+	{
+		SetWrapperError( GL_INVALID_VALUE );
+		return NULL;
+	}
+	GLsizei outputCount = quads * 6;
+	GLushort *output = outputCount ? (GLushort *)malloc((size_t)outputCount * sizeof( *output )) : NULL;
+	if( outputCount && !output )
+	{
+		SetWrapperError( GL_OUT_OF_MEMORY );
+		return NULL;
+	}
+	GLsizei out = 0;
+	for( GLsizei q = 0; q < quads; ++q )
+	{
+		GLsizei base = *mode == GL_QUADS ? q * 4 : q * 2;
+		GLuint a = ReadDrawIndex( indices, type, base );
+		GLuint b = ReadDrawIndex( indices, type, base + 1 );
+		GLuint c = *mode == GL_QUADS ? ReadDrawIndex( indices, type, base + 2 ) : ReadDrawIndex( indices, type, base + 3 );
+		GLuint d = *mode == GL_QUADS ? ReadDrawIndex( indices, type, base + 3 ) : ReadDrawIndex( indices, type, base + 2 );
+		if( a > USHRT_MAX || b > USHRT_MAX || c > USHRT_MAX || d > USHRT_MAX )
+		{
+			free( output );
+			SetWrapperError( GL_INVALID_OPERATION );
+			return NULL;
+		}
+		output[out++] = (GLushort)a;
+		output[out++] = (GLushort)b;
+		output[out++] = (GLushort)c;
+		output[out++] = (GLushort)a;
+		output[out++] = (GLushort)c;
+		output[out++] = (GLushort)d;
+	}
+	*mode = GL_TRIANGLES;
+	*expandedCount = outputCount;
+	return output;
+}
+
 void GL_MANGLE( glDrawElements )( GLenum mode, GLsizei count, GLenum type, const GLvoid *indices )
 {
+	GLsizei drawCount = count;
+	GLenum drawMode = mode;
+	GLenum drawType = type;
+	const GLvoid *drawIndices = indices;
+	GLushort *expandedIndices = NULL;
+	if( mode == GL_QUADS || mode == GL_QUAD_STRIP )
+	{
+		if( skipnanogl )
+		{
+			SetWrapperError( GL_INVALID_OPERATION );
+			return; // GLES cannot expand quad modes when indices are in a VBO.
+		}
+		if( count > 0 && !indices )
+		{
+			SetWrapperError( GL_INVALID_OPERATION );
+			return;
+		}
+		expandedIndices = ExpandQuadIndices( &drawMode, count, type, indices, &drawCount );
+		if( drawMode != GL_TRIANGLES )
+			return; // expansion rejected an invalid count/type or could not allocate.
+		drawType = GL_UNSIGNED_SHORT;
+		drawIndices = expandedIndices;
+	}
+	else if( mode == GL_POLYGON )
+	{
+		drawMode = GL_TRIANGLE_FAN;
+	}
 	if( skipnanogl )
 	{
-		glEsImpl->glDrawElements( mode, count, type, indices );
+		glEsImpl->glDrawElements( drawMode, drawCount, drawType, drawIndices );
+		free( expandedIndices );
 		return;
 	}
 	// ensure that all primitives specified between glBegin/glEnd pairs
@@ -2100,7 +2537,8 @@ void GL_MANGLE( glDrawElements )( GLenum mode, GLsizei count, GLenum type, const
 	}
 
 	arraysValid = GL_FALSE;
-	glEsImpl->glDrawElements( mode, count, type, indices );
+	glEsImpl->glDrawElements( drawMode, drawCount, drawType, drawIndices );
+	free( expandedIndices );
 }
 
 bool vboarray;
@@ -2321,27 +2759,47 @@ void GL_MANGLE( glClearStencil )( GLint s )
 	glEsImpl->glClearStencil( s );
 }
 
+void GL_MANGLE( glMultiTexCoord1fARB )( GLenum target, GLfloat s )
+{
+	SetCurrentTexCoord( target, &s, 1 );
+}
+
 void GL_MANGLE( glMultiTexCoord2fARB )( GLenum target, GLfloat s, GLfloat t )
 {
-	if( target == GL_TEXTURE0 )
-	{
-		GL_MANGLE_NAME( glTexCoord2f )( s, t );
-	}
-	else
-	{
-		currentVertexAttrib.s_multi = s;
-		currentVertexAttrib.t_multi = t;
-	}
+	const GLfloat coords[2] = { s, t };
+	SetCurrentTexCoord( target, coords, 2 );
 }
 
-void GL_MANGLE( glMultiTexCoord3fARB )( GLenum a, GLfloat b, GLfloat c, GLfloat r )
+void GL_MANGLE( glMultiTexCoord3fARB )( GLenum target, GLfloat s, GLfloat t, GLfloat r )
 {
-	return GL_MANGLE_NAME( glMultiTexCoord2fARB )( a, b, c );
+	const GLfloat coords[3] = { s, t, r };
+	SetCurrentTexCoord( target, coords, 3 );
 }
 
-void GL_MANGLE( glMultiTexCoord2f )( GLenum a, GLfloat b, GLfloat c )
+void GL_MANGLE( glMultiTexCoord4fARB )( GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q )
 {
-	GL_MANGLE_NAME( glMultiTexCoord2fARB )( a, b, c );
+	const GLfloat coords[4] = { s, t, r, q };
+	SetCurrentTexCoord( target, coords, 4 );
+}
+
+void GL_MANGLE( glMultiTexCoord1f )( GLenum target, GLfloat s )
+{
+	GL_MANGLE_NAME( glMultiTexCoord1fARB )( target, s );
+}
+
+void GL_MANGLE( glMultiTexCoord2f )( GLenum target, GLfloat s, GLfloat t )
+{
+	GL_MANGLE_NAME( glMultiTexCoord2fARB )( target, s, t );
+}
+
+void GL_MANGLE( glMultiTexCoord3f )( GLenum target, GLfloat s, GLfloat t, GLfloat r )
+{
+	GL_MANGLE_NAME( glMultiTexCoord3fARB )( target, s, t, r );
+}
+
+void GL_MANGLE( glMultiTexCoord4f )( GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q )
+{
+	GL_MANGLE_NAME( glMultiTexCoord4fARB )( target, s, t, r, q );
 }
 
 /* Vladimir  */
@@ -2410,7 +2868,8 @@ void GL_MANGLE( glTexParameteri )( GLenum target, GLenum pname, GLint param )
 {
 	if( pname == GL_TEXTURE_BORDER_COLOR )
 	{
-		return; // not supported by opengl es
+		SetWrapperError( GL_INVALID_ENUM );
+		return; // desktop OpenGL border color is not supported by GLES
 	}
 	if(( pname == GL_TEXTURE_WRAP_S || pname == GL_TEXTURE_WRAP_T ) && param == GL_CLAMP )
 	{
@@ -2425,7 +2884,8 @@ void GL_MANGLE( glTexParameterx )( GLenum target, GLenum pname, GLfixed param )
 {
 	if( pname == GL_TEXTURE_BORDER_COLOR )
 	{
-		return; // not supported by opengl es
+		SetWrapperError( GL_INVALID_ENUM );
+		return; // desktop OpenGL border color is not supported by GLES
 	}
 	if(( pname == GL_TEXTURE_WRAP_S || pname == GL_TEXTURE_WRAP_T ) && param == GL_CLAMP )
 	{
@@ -2491,6 +2951,37 @@ void GL_MANGLE( glTexEnvfv )( GLenum target, GLenum pname, const GLfloat *param 
 
 void GL_MANGLE( glDrawArrays )( GLenum mode, GLint first, GLsizei count )
 {
+	if( mode == GL_QUADS || mode == GL_QUAD_STRIP )
+	{
+		if( skipnanogl )
+		{
+			SetWrapperError( GL_INVALID_OPERATION );
+			return; // VBO-backed arrays cannot be expanded without reading their data.
+		}
+		if( first < 0 || count < 0 )
+		{
+			SetWrapperError( GL_INVALID_VALUE );
+			return;
+		}
+		if((size_t)first + (size_t)count > (size_t)USHRT_MAX + 1 )
+		{
+			SetWrapperError( GL_INVALID_OPERATION );
+			return; // GLES 1.x element indices are limited to 16 bits.
+		}
+		GLushort *sequence = count ? (GLushort *)malloc((size_t)count * sizeof( *sequence )) : NULL;
+		if( count && !sequence )
+		{
+			SetWrapperError( GL_OUT_OF_MEMORY );
+			return;
+		}
+		for( GLsizei i = 0; i < count; ++i )
+			sequence[i] = (GLushort)( first + i );
+		GL_MANGLE_NAME( glDrawElements )( mode, count, GL_UNSIGNED_SHORT, sequence );
+		free( sequence );
+		return;
+	}
+	if( mode == GL_POLYGON )
+		mode = GL_TRIANGLE_FAN;
 	if( skipnanogl )
 	{
 		glEsImpl->glDrawArrays( mode, first, count );
@@ -2498,8 +2989,6 @@ void GL_MANGLE( glDrawArrays )( GLenum mode, GLint first, GLsizei count )
 	}
 	// ensure that all primitives specified between glBegin/glEnd pairs
 	// are rendered first, and that we have correct tmu in use..
-	if( mode == GL_QUADS )
-		mode = GL_TRIANGLE_FAN;
 	FlushOnStateChange();
 	// setup correct vertex/color/texcoord pointers
 	if( arraysValid || tmuState0.vertex_array.changed || tmuState0.color_array.changed || tmuState0.texture_coord_array.changed || tmuState0.normal_array.changed )
@@ -2604,59 +3093,94 @@ void GL_MANGLE( glCopyTexSubImage2D )( GLenum target, GLint level, GLint xoffset
 	glEsImpl->glCopyTexSubImage2D( target, level, xoffset, yoffset, x, y, width, height );
 }
 
+#define CHECK_FBO_PROC( proc ) do { if( !glEsImpl->proc ) { SetWrapperError( GL_INVALID_OPERATION ); return; } } while( 0 )
+
 void GL_MANGLE( glGenFramebuffers )( GLsizei n, GLuint *framebuffers )
 {
+	CHECK_FBO_PROC( glGenFramebuffers );
 	FlushOnStateChange();
 	glEsImpl->glGenFramebuffers( n, framebuffers );
 }
 
 void GL_MANGLE( glGenRenderbuffers )( GLsizei n, GLuint *renderbuffers )
 {
+	CHECK_FBO_PROC( glGenRenderbuffers );
 	FlushOnStateChange();
 	glEsImpl->glGenRenderbuffers( n, renderbuffers );
 }
 
 void GL_MANGLE( glBindRenderbuffer )( GLenum target, GLuint renderbuffer )
 {
+	CHECK_FBO_PROC( glBindRenderbuffer );
 	FlushOnStateChange();
 	glEsImpl->glBindRenderbuffer( target, renderbuffer );
 }
 
 void GL_MANGLE( glBindFramebuffer )( GLenum target, GLuint framebuffer )
 {
+	CHECK_FBO_PROC( glBindFramebuffer );
 	FlushOnStateChange();
 	glEsImpl->glBindFramebuffer( target, framebuffer );
 }
 
 void GL_MANGLE( glFramebufferRenderbuffer )( GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer )
 {
+	CHECK_FBO_PROC( glFramebufferRenderbuffer );
 	FlushOnStateChange();
 	glEsImpl->glFramebufferRenderbuffer( target, attachment, renderbuffertarget, renderbuffer );
 }
 
+GLboolean GL_MANGLE( glIsRenderbuffer )( GLuint renderbuffer )
+{
+	if( !glEsImpl->glIsRenderbuffer )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return GL_FALSE;
+	}
+	FlushOnStateChange();
+	return glEsImpl->glIsRenderbuffer( renderbuffer );
+}
+
+GLenum GL_MANGLE( glCheckFramebufferStatus )( GLenum target )
+{
+	if( !glEsImpl->glCheckFramebufferStatus )
+	{
+		SetWrapperError( GL_INVALID_OPERATION );
+		return 0;
+	}
+	FlushOnStateChange();
+	return glEsImpl->glCheckFramebufferStatus( target );
+}
+
 void GL_MANGLE( glDeleteFramebuffers )( GLsizei n, const GLuint *framebuffers )
 {
+	CHECK_FBO_PROC( glDeleteFramebuffers );
 	FlushOnStateChange();
 	glEsImpl->glDeleteFramebuffers( n, framebuffers );
 }
 
 void GL_MANGLE( glDeleteRenderbuffers )( GLsizei n, const GLuint *renderbuffers )
 {
+	CHECK_FBO_PROC( glDeleteRenderbuffers );
 	FlushOnStateChange();
 	glEsImpl->glDeleteRenderbuffers( n, renderbuffers );
 }
 
 void GL_MANGLE( glFramebufferTexture2D )( GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level )
 {
+	CHECK_FBO_PROC( glFramebufferTexture2D );
 	FlushOnStateChange();
 	glEsImpl->glFramebufferTexture2D( target, attachment, textarget, texture, level );
 }
 
 void GL_MANGLE( glRenderbufferStorage )( GLenum target, GLenum internalformat, GLsizei width, GLsizei height )
 {
+	CHECK_FBO_PROC( glRenderbufferStorage );
 	FlushOnStateChange();
 	glEsImpl->glRenderbufferStorage( target, internalformat, width, height );
 }
+
+#undef CHECK_FBO_PROC
 
 void GL_MANGLE( glBindBufferARB )( GLuint target, GLuint index )
 {
@@ -2740,3 +3264,160 @@ GLuint GL_MANGLE( glGetDebugMessageLogARB )( GLuint count, GLsizei bufsize, GLen
 		return glEsImpl->glGetDebugMessageLogKHR( count, bufsize, sources, types, ids, severities, lengths, messageLog );
 	return 0;
 }
+
+/* Export both the pgl* API and its conventional GL spelling in mangled builds.
+ * The aliases are declared in this translation unit so GCC/Clang can bind each
+ * symbol directly to the exact wrapper implementation and ABI. */
+#if defined( NANOGL_MANGLE_PREPEND ) && defined( __GNUC__ )
+#define NANOGL_ALIAS( name ) extern __typeof__( p ## name ) name __attribute__(( alias( "p" #name )))
+NANOGL_ALIAS( glActiveTexture );
+NANOGL_ALIAS( glActiveTextureARB );
+NANOGL_ALIAS( glAlphaFunc );
+NANOGL_ALIAS( glArrayElement );
+NANOGL_ALIAS( glBegin );
+NANOGL_ALIAS( glBindBufferARB );
+NANOGL_ALIAS( glBindFramebuffer );
+NANOGL_ALIAS( glBindRenderbuffer );
+NANOGL_ALIAS( glBindTexture );
+NANOGL_ALIAS( glBlendFunc );
+NANOGL_ALIAS( glBufferDataARB );
+NANOGL_ALIAS( glBufferSubDataARB );
+NANOGL_ALIAS( glCallList );
+NANOGL_ALIAS( glCheckFramebufferStatus );
+NANOGL_ALIAS( glClear );
+NANOGL_ALIAS( glClearColor );
+NANOGL_ALIAS( glClearDepth );
+NANOGL_ALIAS( glClearStencil );
+NANOGL_ALIAS( glClientActiveTexture );
+NANOGL_ALIAS( glClientActiveTextureARB );
+NANOGL_ALIAS( glClipPlane );
+NANOGL_ALIAS( glColor3f );
+NANOGL_ALIAS( glColor3fv );
+NANOGL_ALIAS( glColor3ub );
+NANOGL_ALIAS( glColor3ubv );
+NANOGL_ALIAS( glColor4f );
+NANOGL_ALIAS( glColor4fv );
+NANOGL_ALIAS( glColor4ub );
+NANOGL_ALIAS( glColor4ubv );
+NANOGL_ALIAS( glColorMask );
+NANOGL_ALIAS( glColorMaterial );
+NANOGL_ALIAS( glColorPointer );
+NANOGL_ALIAS( glCompressedTexImage2D );
+NANOGL_ALIAS( glCopyTexImage2D );
+NANOGL_ALIAS( glCopyTexSubImage2D );
+NANOGL_ALIAS( glCullFace );
+NANOGL_ALIAS( glDebugMessageCallbackARB );
+NANOGL_ALIAS( glDebugMessageControlARB );
+NANOGL_ALIAS( glDebugMessageInsertARB );
+NANOGL_ALIAS( glDeleteBuffersARB );
+NANOGL_ALIAS( glDeleteFramebuffers );
+NANOGL_ALIAS( glDeleteRenderbuffers );
+NANOGL_ALIAS( glDeleteTextures );
+NANOGL_ALIAS( glDepthFunc );
+NANOGL_ALIAS( glDepthMask );
+NANOGL_ALIAS( glDepthRange );
+NANOGL_ALIAS( glDisable );
+NANOGL_ALIAS( glDisableClientState );
+NANOGL_ALIAS( glDrawArrays );
+NANOGL_ALIAS( glDrawBuffer );
+NANOGL_ALIAS( glDrawElements );
+NANOGL_ALIAS( glEnable );
+NANOGL_ALIAS( glEnableClientState );
+NANOGL_ALIAS( glEnd );
+NANOGL_ALIAS( glFinish );
+NANOGL_ALIAS( glFlush );
+NANOGL_ALIAS( glFogf );
+NANOGL_ALIAS( glFogfv );
+NANOGL_ALIAS( glFogi );
+NANOGL_ALIAS( glFramebufferRenderbuffer );
+NANOGL_ALIAS( glFramebufferTexture2D );
+NANOGL_ALIAS( glFrontFace );
+NANOGL_ALIAS( glFrustum );
+NANOGL_ALIAS( glGenBuffersARB );
+NANOGL_ALIAS( glGenFramebuffers );
+NANOGL_ALIAS( glGenRenderbuffers );
+NANOGL_ALIAS( glGenTextures );
+NANOGL_ALIAS( glGetDebugMessageLogARB );
+NANOGL_ALIAS( glGetError );
+NANOGL_ALIAS( glGetFloatv );
+NANOGL_ALIAS( glGetIntegerv );
+NANOGL_ALIAS( glGetString );
+NANOGL_ALIAS( glGetTexImage );
+NANOGL_ALIAS( glGetTexParameteriv );
+NANOGL_ALIAS( glHint );
+NANOGL_ALIAS( glIsEnabled );
+NANOGL_ALIAS( glIsRenderbuffer );
+NANOGL_ALIAS( glIsTexture );
+NANOGL_ALIAS( glLightModelf );
+NANOGL_ALIAS( glLightModelfv );
+NANOGL_ALIAS( glLightf );
+NANOGL_ALIAS( glLightfv );
+NANOGL_ALIAS( glLineWidth );
+NANOGL_ALIAS( glLoadIdentity );
+NANOGL_ALIAS( glLoadMatrixf );
+NANOGL_ALIAS( glMaterialf );
+NANOGL_ALIAS( glMaterialfv );
+NANOGL_ALIAS( glMatrixMode );
+NANOGL_ALIAS( glMultMatrixf );
+NANOGL_ALIAS( glMultiTexCoord1f );
+NANOGL_ALIAS( glMultiTexCoord1fARB );
+NANOGL_ALIAS( glMultiTexCoord2f );
+NANOGL_ALIAS( glMultiTexCoord2fARB );
+NANOGL_ALIAS( glMultiTexCoord3f );
+NANOGL_ALIAS( glMultiTexCoord3fARB );
+NANOGL_ALIAS( glMultiTexCoord4f );
+NANOGL_ALIAS( glMultiTexCoord4fARB );
+NANOGL_ALIAS( glNormal3f );
+NANOGL_ALIAS( glNormal3fv );
+NANOGL_ALIAS( glNormalPointer );
+NANOGL_ALIAS( glOrtho );
+NANOGL_ALIAS( glPixelStorei );
+NANOGL_ALIAS( glPointSize );
+NANOGL_ALIAS( glPolygonMode );
+NANOGL_ALIAS( glPolygonOffset );
+NANOGL_ALIAS( glPopMatrix );
+NANOGL_ALIAS( glPushMatrix );
+NANOGL_ALIAS( glReadBuffer );
+NANOGL_ALIAS( glReadPixels );
+NANOGL_ALIAS( glRenderbufferStorage );
+NANOGL_ALIAS( glRotatef );
+NANOGL_ALIAS( glScalef );
+NANOGL_ALIAS( glScissor );
+NANOGL_ALIAS( glShadeModel );
+NANOGL_ALIAS( glStencilFunc );
+NANOGL_ALIAS( glStencilMask );
+NANOGL_ALIAS( glStencilOp );
+NANOGL_ALIAS( glTexCoord1f );
+NANOGL_ALIAS( glTexCoord1fv );
+NANOGL_ALIAS( glTexCoord2f );
+NANOGL_ALIAS( glTexCoord2fv );
+NANOGL_ALIAS( glTexCoord3f );
+NANOGL_ALIAS( glTexCoord3fv );
+NANOGL_ALIAS( glTexCoord4f );
+NANOGL_ALIAS( glTexCoord4fv );
+NANOGL_ALIAS( glTexCoordPointer );
+NANOGL_ALIAS( glTexEnvf );
+NANOGL_ALIAS( glTexEnvfv );
+NANOGL_ALIAS( glTexEnvi );
+NANOGL_ALIAS( glTexGenfv );
+NANOGL_ALIAS( glTexGeni );
+NANOGL_ALIAS( glTexImage1D );
+NANOGL_ALIAS( glTexImage2D );
+NANOGL_ALIAS( glTexImage3D );
+NANOGL_ALIAS( glTexParameterf );
+NANOGL_ALIAS( glTexParameterfv );
+NANOGL_ALIAS( glTexParameteri );
+NANOGL_ALIAS( glTexParameterx );
+NANOGL_ALIAS( glTexSubImage1D );
+NANOGL_ALIAS( glTexSubImage2D );
+NANOGL_ALIAS( glTexSubImage3D );
+NANOGL_ALIAS( glTranslatef );
+NANOGL_ALIAS( glVertex2f );
+NANOGL_ALIAS( glVertex3f );
+NANOGL_ALIAS( glVertex3fv );
+NANOGL_ALIAS( glVertex4f );
+NANOGL_ALIAS( glVertex4fv );
+NANOGL_ALIAS( glVertexPointer );
+NANOGL_ALIAS( glViewport );
+#undef NANOGL_ALIAS
+#endif

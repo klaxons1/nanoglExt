@@ -5,11 +5,21 @@
  */
 #include "gl.h"
 
-#ifdef NANOGL_MANGLE_PREPEND
+#if defined( NANOGL_MANGLE_PREPEND ) && !defined( __GNUC__ )
 
 void NANOGL_APIENTRY glDeleteFramebuffers( GLsizei n, const GLuint *framebuffers )
 {
 	pglDeleteFramebuffers( n, framebuffers );
+}
+
+GLenum NANOGL_APIENTRY glCheckFramebufferStatus( GLenum target )
+{
+	return pglCheckFramebufferStatus( target );
+}
+
+GLboolean NANOGL_APIENTRY glIsRenderbuffer( GLuint renderbuffer )
+{
+	return pglIsRenderbuffer( renderbuffer );
 }
 
 void NANOGL_APIENTRY glGenTextures( GLsizei n, GLuint *textures )
@@ -75,6 +85,101 @@ GLboolean NANOGL_APIENTRY glIsEnabled( GLenum cap )
 GLboolean NANOGL_APIENTRY glIsTexture( GLuint texture )
 {
 	return pglIsTexture( texture );
+}
+
+void NANOGL_APIENTRY glVertex4f( GLfloat x, GLfloat y, GLfloat z, GLfloat w )
+{
+	pglVertex4f( x, y, z, w );
+}
+
+void NANOGL_APIENTRY glVertex4fv( const GLfloat *v )
+{
+	pglVertex4fv( v );
+}
+
+void NANOGL_APIENTRY glNormal3f( GLfloat nx, GLfloat ny, GLfloat nz )
+{
+	pglNormal3f( nx, ny, nz );
+}
+
+void NANOGL_APIENTRY glTexCoord1f( GLfloat s )
+{
+	pglTexCoord1f( s );
+}
+
+void NANOGL_APIENTRY glTexCoord2f( GLfloat s, GLfloat t )
+{
+	pglTexCoord2f( s, t );
+}
+
+void NANOGL_APIENTRY glTexCoord3f( GLfloat s, GLfloat t, GLfloat r )
+{
+	pglTexCoord3f( s, t, r );
+}
+
+void NANOGL_APIENTRY glTexCoord4f( GLfloat s, GLfloat t, GLfloat r, GLfloat q )
+{
+	pglTexCoord4f( s, t, r, q );
+}
+
+void NANOGL_APIENTRY glTexCoord1fv( const GLfloat *v )
+{
+	pglTexCoord1fv( v );
+}
+
+void NANOGL_APIENTRY glTexCoord2fv( const GLfloat *v )
+{
+	pglTexCoord2fv( v );
+}
+
+void NANOGL_APIENTRY glTexCoord3fv( const GLfloat *v )
+{
+	pglTexCoord3fv( v );
+}
+
+void NANOGL_APIENTRY glTexCoord4fv( const GLfloat *v )
+{
+	pglTexCoord4fv( v );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord1f( GLenum target, GLfloat s )
+{
+	pglMultiTexCoord1f( target, s );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord2f( GLenum target, GLfloat s, GLfloat t )
+{
+	pglMultiTexCoord2f( target, s, t );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord3f( GLenum target, GLfloat s, GLfloat t, GLfloat r )
+{
+	pglMultiTexCoord3f( target, s, t, r );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord4f( GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q )
+{
+	pglMultiTexCoord4f( target, s, t, r, q );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord1fARB( GLenum target, GLfloat s )
+{
+	pglMultiTexCoord1fARB( target, s );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord2fARB( GLenum target, GLfloat s, GLfloat t )
+{
+	pglMultiTexCoord2fARB( target, s, t );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord3fARB( GLenum target, GLfloat s, GLfloat t, GLfloat r )
+{
+	pglMultiTexCoord3fARB( target, s, t, r );
+}
+
+void NANOGL_APIENTRY glMultiTexCoord4fARB( GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q )
+{
+	pglMultiTexCoord4fARB( target, s, t, r, q );
 }
 
 #endif /* NANOGL_MANGLE_PREPEND */

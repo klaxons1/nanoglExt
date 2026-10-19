@@ -210,6 +210,8 @@ typedef struct GlESInterface
 	void( APIENTRY * glDeleteRenderbuffers )( unsigned int n, const unsigned int *renderbuffers ) S;
 	void( APIENTRY * glDeleteFramebuffers )( unsigned int n, const unsigned int *framebuffers ) S;
 	void( APIENTRY * glFramebufferRenderbuffer )( unsigned int target, unsigned int attachment, unsigned int renderbuffertarget, unsigned int renderbuffer ) S;
+	unsigned char( APIENTRY * glIsRenderbuffer )( unsigned int renderbuffer ) S;
+	unsigned int( APIENTRY * glCheckFramebufferStatus )( unsigned int target ) S;
 
 // GL_KHR_debug
 	void( APIENTRY * glDebugMessageControlKHR )( unsigned int source, unsigned int type, unsigned int severity, int count, const unsigned int *ids, unsigned char enabled ) S;

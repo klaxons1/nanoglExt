@@ -16,6 +16,14 @@ static struct
 
 static int numdraws;
 static int nonGlesProcLookups;
+static GLenum clientTextureUnit = GL_TEXTURE0;
+static GLint observedTexCoordSize;
+static GLsizei observedTexCoordStride;
+static const void *observedTexCoordPointer;
+static const void *observedNormalPointer;
+static const void *observedVertexPointer;
+static const void *observedColorPointer;
+static GLint observedVertexSize;
 
 static void APIENTRY StubNop( void )
 {
@@ -23,7 +31,47 @@ static void APIENTRY StubNop( void )
 
 static const GLubyte *APIENTRY StubGetString( GLenum name )
 {
+	(void)name;
 	return (const GLubyte *)"GL_IMG_ray_tracing"; // PowerVR Wizard might've died but it still lives in our hearts
+}
+
+static void APIENTRY StubClientActiveTexture( GLenum texture )
+{
+	clientTextureUnit = texture;
+}
+
+static void APIENTRY StubTexCoordPointer( GLint size, GLenum type, GLsizei stride, const GLvoid *pointer )
+{
+	(void)type;
+	if( clientTextureUnit == GL_TEXTURE0 )
+	{
+		observedTexCoordSize = size;
+		observedTexCoordStride = stride;
+		observedTexCoordPointer = pointer;
+	}
+}
+
+static void APIENTRY StubNormalPointer( GLenum type, GLsizei stride, const GLvoid *pointer )
+{
+	(void)type;
+	(void)stride;
+	observedNormalPointer = pointer;
+}
+
+static void APIENTRY StubColorPointer( GLint size, GLenum type, GLsizei stride, const GLvoid *pointer )
+{
+	(void)size;
+	(void)type;
+	(void)stride;
+	observedColorPointer = pointer;
+}
+
+static void APIENTRY StubVertexPointer( GLint size, GLenum type, GLsizei stride, const GLvoid *pointer )
+{
+	(void)type;
+	(void)stride;
+	observedVertexSize = size;
+	observedVertexPointer = pointer;
 }
 
 static void APIENTRY StubDrawElements( GLenum mode, GLsizei count, GLenum type, const GLvoid *indices )
@@ -41,10 +89,22 @@ static void APIENTRY StubDrawElements( GLenum mode, GLsizei count, GLenum type, 
 
 void *GL_GetProcAddress( const char *name )
 {
+	if( strstr( name, "Framebuffer" ) || strstr( name, "Renderbuffer" ))
+		return NULL;
 	if( !strcmp( name, "glGetTexImage" ) || !strcmp( name, "glColorMaterial" ))
 		nonGlesProcLookups++;
 	if( !strcmp( name, "glDrawElements" ))
 		return (void *)StubDrawElements;
+	if( !strcmp( name, "glClientActiveTexture" ))
+		return (void *)StubClientActiveTexture;
+	if( !strcmp( name, "glTexCoordPointer" ))
+		return (void *)StubTexCoordPointer;
+	if( !strcmp( name, "glNormalPointer" ))
+		return (void *)StubNormalPointer;
+	if( !strcmp( name, "glColorPointer" ))
+		return (void *)StubColorPointer;
+	if( !strcmp( name, "glVertexPointer" ))
+		return (void *)StubVertexPointer;
 	if( !strcmp( name, "glGetString" ))
 		return (void *)StubGetString;
 	return (void *)StubNop;
@@ -86,6 +146,105 @@ static int Test_GetTexImageRejectedByGles( void )
 	GLubyte pixels[4] = { 0, 0, 0, 0 };
 	pglGetTexImage( GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels );
 	return pglGetError() != GL_INVALID_OPERATION;
+}
+
+static int Test_MissingFramebufferExtensionIsSafe( void )
+{
+	return pglCheckFramebufferStatus( 0x8D40 ) != 0 || pglGetError() != GL_INVALID_OPERATION;
+}
+
+static int Test_UnsupportedDesktopOperationsReportErrors( void )
+{
+	GLubyte depth[16];
+	memset( depth, 0xA5, sizeof( depth ));
+
+	pglPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+	if( pglGetError() != GL_INVALID_OPERATION )
+		return 1;
+
+	pglCallList( 1 );
+	if( pglGetError() != GL_INVALID_OPERATION )
+		return 1;
+
+	pglTexGeni( GL_S, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR );
+	if( pglGetError() != GL_INVALID_OPERATION )
+		return 1;
+
+	pglReadPixels( 0, 0, 2, 2, GL_DEPTH_COMPONENT, GL_FLOAT, depth );
+	if( pglGetError() != GL_INVALID_ENUM )
+		return 1;
+	for( size_t i = 0; i < sizeof( depth ); ++i )
+		if( depth[i] != 0xA5 )
+			return 1;
+	return 0;
+}
+
+static int Test_FourComponentAttributes( void )
+{
+	const GLfloat expectedTex[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+	const GLfloat expectedNormal[3] = { 1.0f, 2.0f, 3.0f };
+	const GLfloat expectedVertex[4] = { 0.0f, 0.0f, 0.0f, 0.5f };
+	GLfloat actualTex[4], actualNormal[3], actualVertex[4];
+
+	observedTexCoordSize = observedVertexSize = 0;
+	observedTexCoordStride = 0;
+	observedTexCoordPointer = observedNormalPointer = observedVertexPointer = NULL;
+	pglBegin( GL_TRIANGLES );
+	pglTexCoord4f( expectedTex[0], expectedTex[1], expectedTex[2], expectedTex[3] );
+	pglNormal3f( expectedNormal[0], expectedNormal[1], expectedNormal[2] );
+	pglVertex4f( expectedVertex[0], expectedVertex[1], expectedVertex[2], expectedVertex[3] );
+	EmitVertices( 2 );
+	pglEnd();
+	nanoGL_Flush();
+
+	if( observedTexCoordSize != 4 || observedVertexSize != 4 || observedTexCoordStride < 64 || !observedTexCoordPointer || !observedNormalPointer || !observedVertexPointer )
+		return 1;
+	memcpy( actualTex, observedTexCoordPointer, sizeof( actualTex ));
+	memcpy( actualNormal, observedNormalPointer, sizeof( actualNormal ));
+	memcpy( actualVertex, observedVertexPointer, sizeof( actualVertex ));
+	return memcmp( actualTex, expectedTex, sizeof( actualTex )) ||
+		memcmp( actualNormal, expectedNormal, sizeof( actualNormal )) ||
+		memcmp( actualVertex, expectedVertex, sizeof( actualVertex ));
+}
+
+static int Test_ArrayElementCapturesClientArrays( void )
+{
+	static const GLfloat vertices[] = { -1, -1, 0, 1, 0, -1, 0, 1, 0, 1, 0, 1 };
+	static const GLfloat texcoords[] = { 0, 0, 1, 0, 0.5f, 1 };
+	static const GLfloat normals[] = { 0, 0, 1, 0, 1, 0, 1, 0, 0 };
+	static const GLubyte colors[] = { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255 };
+	GLfloat actual[4];
+	GLubyte actualColor[4];
+
+	pglVertexPointer( 3, GL_FLOAT, 0, vertices );
+	pglColorPointer( 4, GL_UNSIGNED_BYTE, 0, colors );
+	pglNormalPointer( GL_FLOAT, 0, normals );
+	pglTexCoordPointer( 2, GL_FLOAT, 0, texcoords );
+	pglEnableClientState( GL_VERTEX_ARRAY );
+	pglEnableClientState( GL_COLOR_ARRAY );
+	pglEnableClientState( GL_NORMAL_ARRAY );
+	pglEnableClientState( GL_TEXTURE_COORD_ARRAY );
+
+	pglBegin( GL_TRIANGLES );
+	pglArrayElement( 2 );
+	pglArrayElement( 0 );
+	pglArrayElement( 1 );
+	pglEnd();
+	nanoGL_Flush();
+
+	if( !observedVertexPointer || !observedNormalPointer || !observedTexCoordPointer || !observedColorPointer )
+		return 1;
+	memcpy( actual, observedVertexPointer, sizeof( actual ));
+	if( actual[0] != 0.0f || actual[1] != 1.0f || actual[2] != 0.0f )
+		return 1;
+	memcpy( actualColor, observedColorPointer, sizeof( actualColor ));
+	if( actualColor[0] != 0 || actualColor[1] != 0 || actualColor[2] != 255 || actualColor[3] != 255 )
+		return 1;
+	memcpy( actual, observedTexCoordPointer, sizeof( actual ));
+	if( actual[0] != 0.5f || actual[1] != 1.0f || actual[2] != 0.0f || actual[3] != 1.0f )
+		return 1;
+	memcpy( actual, observedNormalPointer, 3 * sizeof( GLfloat ));
+	return actual[0] != 1.0f || actual[1] != 0.0f || actual[2] != 0.0f;
 }
 
 static int Test_TwoQuads( void )
@@ -200,9 +359,13 @@ static int Test_Points( void )
 	return CheckDraw( 0, GL_POINTS, 3, expect );
 }
 
-static int Test_UnsupportedBlockDiscarded( void )
+static int Test_QuadsAndQuadStrip( void )
 {
-	static const GLushort expect[] = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+	static const GLushort expect[] = {
+		0, 1, 2, 0, 2, 3,
+		4, 5, 7, 4, 7, 6,
+		8, 9, 10, 8, 10, 11
+	};
 
 	numdraws = 0;
 	pglBegin( GL_QUADS );
@@ -218,7 +381,29 @@ static int Test_UnsupportedBlockDiscarded( void )
 
 	if( numdraws != 1 )
 		return 1;
-	return CheckDraw( 0, GL_TRIANGLES, 12, expect );
+	return CheckDraw( 0, GL_TRIANGLES, 18, expect );
+}
+
+static int Test_DrawElementsQuadConversion( void )
+{
+	static const GLfloat vertices[8][3] = { { 0 } };
+	static const GLubyte quadIndices[] = { 0, 1, 2, 3 };
+	static const GLushort stripIndices[] = { 4, 5, 6, 7 };
+	static const GLushort quadExpected[] = { 0, 1, 2, 0, 2, 3 };
+	static const GLushort stripExpected[] = { 4, 5, 7, 4, 7, 6 };
+	static const GLushort arraysExpected[] = { 8, 9, 10, 8, 10, 11 };
+
+	pglVertexPointer( 3, GL_FLOAT, 0, vertices );
+	pglEnableClientState( GL_VERTEX_ARRAY );
+	numdraws = 0;
+	pglDrawElements( GL_QUADS, 4, GL_UNSIGNED_BYTE, quadIndices );
+	pglDrawElements( GL_QUAD_STRIP, 4, GL_UNSIGNED_SHORT, stripIndices );
+	pglDrawArrays( GL_QUADS, 8, 4 );
+	if( numdraws != 3 )
+		return 1;
+	return CheckDraw( 0, GL_TRIANGLES, 6, quadExpected ) |
+		CheckDraw( 1, GL_TRIANGLES, 6, stripExpected ) |
+		CheckDraw( 2, GL_TRIANGLES, 6, arraysExpected );
 }
 
 #define RUN_TEST( fn )                   \
@@ -245,6 +430,10 @@ int main( void )
 	RUN_TEST( Test_ExtensionsString );
 	RUN_TEST( Test_NoDesktopOnlyGlesLookups );
 	RUN_TEST( Test_GetTexImageRejectedByGles );
+	RUN_TEST( Test_MissingFramebufferExtensionIsSafe );
+	RUN_TEST( Test_UnsupportedDesktopOperationsReportErrors );
+	RUN_TEST( Test_FourComponentAttributes );
+	RUN_TEST( Test_ArrayElementCapturesClientArrays );
 	RUN_TEST( Test_TwoQuads );
 	RUN_TEST( Test_Lines );
 	RUN_TEST( Test_LineStrip );
@@ -252,7 +441,8 @@ int main( void )
 	RUN_TEST( Test_ClassChangeFlush );
 	RUN_TEST( Test_OddLinesVertexDropped );
 	RUN_TEST( Test_Points );
-	RUN_TEST( Test_UnsupportedBlockDiscarded );
+	RUN_TEST( Test_QuadsAndQuadStrip );
+	RUN_TEST( Test_DrawElementsQuadConversion );
 
 	nanoGL_Destroy();
 

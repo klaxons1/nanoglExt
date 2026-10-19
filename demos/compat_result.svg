@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+<rect width="100%" height="100%" fill="#101827"/>
+<text x="32" y="42" fill="#f3f4f6" font-family="sans-serif" font-size="20">NanoGL legacy immediate-mode demo</text>
+<polygon points="134,172 320,100 505,172" fill="rgb(71,183,244)" fill-opacity="1.000" stroke="#111827" stroke-width="2"/>
+<polygon points="134,172 505,172 320,244" fill="rgb(71,183,244)" fill-opacity="1.000" stroke="#111827" stroke-width="2"/>
+<polygon points="134,172 320,244 320,398" fill="rgb(30,107,198)" fill-opacity="1.000" stroke="#111827" stroke-width="2"/>
+<polygon points="134,172 320,398 134,326" fill="rgb(30,107,198)" fill-opacity="1.000" stroke="#111827" stroke-width="2"/>
+<polygon points="320,244 505,172 505,326" fill="rgb(45,147,107)" fill-opacity="1.000" stroke="#111827" stroke-width="2"/>
+<polygon points="320,244 505,326 320,398" fill="rgb(45,147,107)" fill-opacity="1.000" stroke="#111827" stroke-width="2"/>
+<polygon points="25,388 115,388 70,316" fill="rgb(255,190,64)" fill-opacity="1.000" stroke="#111827" stroke-width="2"/>
+<text x="32" y="450" fill="#9ca3af" font-family="monospace" font-size="13">Captured GLES draws: 1 | GL_QUADS, glArrayElement, normals, RGBA, 4D texcoords</text>
+</svg>
